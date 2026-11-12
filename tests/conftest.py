@@ -2,7 +2,7 @@ import shutil
 
 import pytest
 
-from lifestream import testdata
+from lifestream.evaluation import testdata
 
 requires_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
 

@@ -1,7 +1,7 @@
-import { api, type VideoItem } from "../api";
-import UploadCard from "../components/UploadCard";
-import VideoList from "../components/VideoList";
-import { usePolling } from "../usePolling";
+import { api, type VideoItem } from "../lib/api";
+import UploadCard from "../components/library/UploadCard";
+import VideoList from "../components/library/VideoList";
+import { usePolling } from "../lib/usePolling";
 
 const busy = (videos: VideoItem[]) => videos.some((v) => v.status === "queued" || v.status === "processing");
 

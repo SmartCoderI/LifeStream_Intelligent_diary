@@ -1,14 +1,14 @@
 import { ArrowLeft, BookOpen, Check, Clapperboard, FileText, Loader2, Play, Users } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, type VideoDetail } from "../api";
-import DiaryTab from "../components/DiaryTab";
-import ScenesTab from "../components/ScenesTab";
-import SpeakersTab from "../components/SpeakersTab";
-import StatusBadge, { ProgressBar } from "../components/StatusBadge";
-import TranscriptTab from "../components/TranscriptTab";
-import { clock, parseTimestamp, speakerColors } from "../format";
-import { usePolling } from "../usePolling";
+import { api, type VideoDetail } from "../lib/api";
+import DiaryTab from "../components/video/DiaryTab";
+import ScenesTab from "../components/video/ScenesTab";
+import SpeakersTab from "../components/video/SpeakersTab";
+import StatusBadge, { ProgressBar } from "../components/library/StatusBadge";
+import TranscriptTab from "../components/video/TranscriptTab";
+import { clock, parseTimestamp, speakerColors } from "../lib/format";
+import { usePolling } from "../lib/usePolling";
 
 type Tab = "diary" | "transcript" | "speakers" | "scenes";
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [

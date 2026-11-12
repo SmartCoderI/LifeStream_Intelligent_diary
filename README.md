@@ -18,19 +18,34 @@ video ─► F1 ffprobe check + FFmpeg audio (16 kHz mono WAV)
 
 Speaker identification uses acoustic models only (pyannote); no LLM decides who is speaking.
 
-| Module | Feature |
-|---|---|
-| `media.py` | F1 validation, metadata, audio and frame extraction |
-| `diarize.py` | F2 speaker diarization |
-| `asr.py`, `merge.py` | F3 speech recognition, merge into Time + Speaker + Text |
-| `scenes.py` | F4 scene detection and keyframe selection |
-| `sync.py` | F5 frames ↔ text by timestamp |
-| `summarize.py`, `llm.py`, `templates/` | F6 classification, summaries, Markdown |
-| `pipeline.py` | Runs everything; saves each step; records step timings |
-| `api.py`, `jobs.py` | Dashboard API and background processing queue |
-| `web/` | React dashboard (Vite + TypeScript) |
-| `evals.py` | M1 speaker accuracy, M3b classification checks |
-| `testdata.py` | Generated test data with known answers |
+Code is organized by the architecture layers in the requirements doc:
+
+```
+src/lifestream/
+├── cli.py, config.py       command line, settings (.env)
+├── schemas.py              data shapes shared by every layer
+├── pipeline.py, timing.py  runs the steps in order, saves each step, records timings
+├── processing/             Processing Core (F1-F5), no LLM
+│   ├── media.py            F1 validation, metadata, audio and frame extraction
+│   ├── diarize.py          F2 speaker diarization
+│   ├── asr.py, merge.py    F3 speech recognition, merge into Time + Speaker + Text
+│   ├── scenes.py           F4 scene detection and keyframe selection
+│   └── sync.py             F5 frames <-> text by timestamp
+├── intelligence/           Intelligence Layer (F6)
+│   ├── llm.py              Claude client (swappable)
+│   ├── summarize.py        classification, summaries, daily diaries
+│   └── templates/          Markdown templates
+├── api/                    Ingestion + API (local F11/F12)
+│   ├── app.py              REST API for the dashboard
+│   └── jobs.py             background processing queue
+└── evaluation/             success metrics (M1, M3b) and generated test data
+
+tests/                      same layout as src/lifestream/
+web/src/
+├── pages/                  Videos, Video (diary), Diaries
+├── components/             layout/, library/ (upload + list), video/ (diary tabs)
+└── lib/                    API client, formatting, polling
+```
 
 ## Setup
 
@@ -49,9 +64,11 @@ The first run downloads the speech models (~2 GB).
 ## Dashboard
 
 ```bash
-cd web && npm install && npm run build && cd ..   # once (and after changing the web app)
-uv run lifestream serve                            # then open http://127.0.0.1:8000
+./dev.sh build    # builds the web app and serves everything: open http://127.0.0.1:8000
+./dev.sh          # development: open http://localhost:5173 (live reload while editing web/)
 ```
+
+Ctrl+C stops both the backend and the web server.
 
 - **Videos**: upload a video with its recording date, watch processing progress, retry or delete.
 - **Video page**: player plus Diary / Transcript / Speakers / Scenes tabs; every timestamp
@@ -60,8 +77,7 @@ uv run lifestream serve                            # then open http://127.0.0.1:
 - Ask / Search arrives with Stage 2.
 
 Uploads are saved in `data/uploads/` and processed one at a time in the background.
-Developing the web app: run `uv run lifestream serve` and, in `web/`, `npm run dev`
-(http://localhost:5173, live reload). Web tests: `cd web && npm test`.
+Web tests: `cd web && npm test`.
 
 ## Command line
 

@@ -29,9 +29,9 @@ def process(
     no_llm: bool = typer.Option(False, help="Stop after the script (skip classification/summary)."),
 ):
     """Run the Stage 1 pipeline on video files."""
-    from .diarize import DiarizationError
-    from .llm import LLMError
-    from .media import MediaError
+    from .processing.diarize import DiarizationError
+    from .intelligence.llm import LLMError
+    from .processing.media import MediaError
     from .pipeline import process_video
 
     dt.date.fromisoformat(date)  # validate
@@ -74,7 +74,7 @@ def eval_speakers(
     target: float = typer.Option(0.90, help="Pass threshold for segment accuracy."),
 ):
     """M1: % of reference speech segments with the correct speaker, plus DER."""
-    from .evals import der, load_rttm, segment_accuracy
+    from .evaluation.metrics import der, load_rttm, segment_accuracy
     from .pipeline import _load_list, load_script
     from .schemas import SpeakerSegment
 
@@ -102,7 +102,7 @@ def eval_classify(
     min_points: float = typer.Option(3.0, help="Meeting summaries: min points per 10 minutes."),
 ):
     """M3b: classification correct + meeting summaries detailed enough."""
-    from .evals import check_classification
+    from .evaluation.metrics import check_classification
 
     results = check_classification(labels, out, min_points)
     if not results:
@@ -119,7 +119,7 @@ def eval_classify(
 @app.command("make-testdata")
 def make_testdata(out: Path = typer.Option(Path("data/test"), help="Where to write test data.")):
     """Generate synthetic test data: formats (F1), scene cuts (F4), 3-speaker overlap (M1)."""
-    from . import testdata
+    from .evaluation import testdata
 
     testdata.make_format_samples(out / "formats")
     cuts = testdata.make_scene_video(out / "scenes" / "cuts.mp4")
@@ -132,7 +132,7 @@ def make_testdata(out: Path = typer.Option(Path("data/test"), help="Where to wri
 @app.command("download-ami")
 def download_ami(out: Path = typer.Option(Path("data/ami")), meeting: str = "ES2004a"):
     """Download one labeled AMI meeting for the F2 diarization data test."""
-    from .testdata import download_ami as fetch
+    from .evaluation.testdata import download_ami as fetch
 
     typer.echo(fetch(out, meeting))
 
@@ -146,7 +146,7 @@ def serve(
     """Start the dashboard API (and the built web app, if `web/dist` exists)."""
     import uvicorn
 
-    from .api import create_app
+    from .api.app import create_app
 
     built = Path("web/dist/index.html").exists()
     typer.echo(f"Dashboard: http://{host}:{port}" if built else

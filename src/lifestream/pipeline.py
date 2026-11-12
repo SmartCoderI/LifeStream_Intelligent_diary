@@ -23,9 +23,10 @@ from typing import Callable
 
 from pydantic import TypeAdapter
 
-from . import asr, diarize, media, merge, scenes, summarize, sync
+from .intelligence import summarize
+from .processing import asr, diarize, media, merge, scenes, sync
 from .config import Settings
-from .llm import AnthropicLLM, LLMClient
+from .intelligence.llm import AnthropicLLM, LLMClient
 from .schemas import Keyframe, Scene, ScriptSegment, SpeakerSegment, VideoSummary, Word
 from .timing import Timings
 

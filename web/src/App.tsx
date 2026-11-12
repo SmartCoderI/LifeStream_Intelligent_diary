@@ -1,5 +1,5 @@
 import { Navigate, Route, Routes } from "react-router-dom";
-import Sidebar from "./components/Sidebar";
+import Sidebar from "./components/layout/Sidebar";
 import DiariesPage from "./pages/DiariesPage";
 import VideoPage from "./pages/VideoPage";
 import VideosPage from "./pages/VideosPage";

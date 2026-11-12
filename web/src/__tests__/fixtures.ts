@@ -1,4 +1,4 @@
-import type { DayDetail, VideoDetail, VideoItem } from "../api";
+import type { DayDetail, VideoDetail, VideoItem } from "../lib/api";
 
 const now = Date.now() / 1000;
 

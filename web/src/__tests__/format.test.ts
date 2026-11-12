@@ -1,4 +1,4 @@
-import { clock, fileSize, parseTimestamp, speakerColors, timeAgo } from "../format";
+import { clock, fileSize, parseTimestamp, speakerColors, timeAgo } from "../lib/format";
 
 test("clock", () => {
   expect(clock(75.4)).toBe("01:15");

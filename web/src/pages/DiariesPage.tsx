@@ -1,8 +1,8 @@
 import { Film } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, Navigate, NavLink, useParams } from "react-router-dom";
-import { api, type DayDetail, type DayItem } from "../api";
-import { clock, longDate } from "../format";
+import { api, type DayDetail, type DayItem } from "../lib/api";
+import { clock, longDate } from "../lib/format";
 
 export default function DiariesPage() {
   const { date } = useParams();
