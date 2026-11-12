@@ -95,7 +95,9 @@ test("timing tab shows the latency breakdown", async () => {
   await userEvent.click(screen.getByRole("tab", { name: /Timing/ }));
   expect(await screen.findByText("Bottleneck")).toBeInTheDocument();
   expect(screen.getByText("0.97×")).toBeInTheDocument();
-  expect(screen.getAllByText("Speech models").length).toBeGreaterThan(0);  // breakdown row + legend
+  expect(screen.getAllByText("Speech models").length).toBeGreaterThan(0);
+  expect(screen.queryByTestId("wf-row")).not.toBeInTheDocument();  // steps collapsed by default
+  await userEvent.click(screen.getByRole("button", { name: /Show step timeline/ }));
   const rows = screen.getAllByTestId("wf-row");
   expect(rows[0]).toHaveTextContent("Upload (browser to server)");
   // sub-step listed right after its parent
@@ -112,6 +114,7 @@ test("processing video shows live timing with the running step", async () => {
   renderAt("/videos/travel-vlog");
   expect(await screen.findByText("Timing so far")).toBeInTheDocument();
   expect(await screen.findByText("Elapsed so far")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /Show step timeline/ }));
   expect(screen.getByText("so far")).toBeInTheDocument();
   expect(document.querySelector(".wf-running")).not.toBeNull();
 });

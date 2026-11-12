@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, ChevronDown, ChevronRight, ExternalLink, Loader2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, ExternalLink, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type LatencySummary, type QueryRecord, type RunRecord, type VideoItem } from "../lib/api";
@@ -7,6 +7,7 @@ import { clockTime, duration, timeAgo } from "../lib/format";
 import { usePolling } from "../lib/usePolling";
 import BreakdownBar from "../components/latency/BreakdownBar";
 import Kpis from "../components/latency/Kpis";
+import StepsToggle from "../components/latency/StepsToggle";
 import Waterfall from "../components/latency/Waterfall";
 
 interface Data { summary: LatencySummary; runs: RunRecord[]; queries: QueryRecord[]; active: VideoItem[] }
@@ -25,18 +26,6 @@ function Status({ status }: { status: string }) {
   return status === "done"
     ? <CheckCircle2 size={14} className="ok-icon" aria-label="Done" />
     : <AlertCircle size={14} className="error-text" aria-label="Failed" />;
-}
-
-function Steps({ children }: { children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="steps-toggle">
-      <button className="link-btn" onClick={() => setOpen(!open)} aria-expanded={open}>
-        {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />} {open ? "Hide" : "Show"} step timeline
-      </button>
-      {open && children}
-    </div>
-  );
 }
 
 export default function LatencyPage() {
@@ -128,7 +117,7 @@ export default function LatencyPage() {
                 </div>
                 {run.status === "failed" && <p className="error-text">Failed: {run.error}</p>}
                 <BreakdownBar items={run.stats.breakdown} />
-                <Steps><Waterfall spans={run.spans} title={`Timeline of ${run.title}`} /></Steps>
+                <StepsToggle><Waterfall spans={run.spans} title={`Timeline of ${run.title}`} /></StepsToggle>
               </div>
             )}
           </div>
@@ -165,7 +154,7 @@ export default function LatencyPage() {
                 <div className="detail-head"><strong>“{query.question}”</strong></div>
                 {query.status === "failed" && <p className="error-text">Failed: {query.error}</p>}
                 <BreakdownBar items={query.stats.breakdown} />
-                <Steps><Waterfall spans={query.spans} title="Query timeline" /></Steps>
+                <StepsToggle><Waterfall spans={query.spans} title="Query timeline" /></StepsToggle>
               </div>
             )}
           </div>

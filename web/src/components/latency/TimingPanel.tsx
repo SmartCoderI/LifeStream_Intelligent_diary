@@ -4,6 +4,7 @@ import { duration } from "../../lib/format";
 import { usePolling } from "../../lib/usePolling";
 import BreakdownBar from "./BreakdownBar";
 import Kpis from "./Kpis";
+import StepsToggle from "./StepsToggle";
 import Waterfall from "./Waterfall";
 
 const live = (t: Timeline) => t.status === "running" || t.status === "queued";
@@ -33,8 +34,9 @@ export default function TimingPanel({ videoId }: { videoId: string }) {
           )}
         </>
       )}
-      <h4 className="subhead">Steps {configLine(s?.config) && <span className="muted">· {configLine(s?.config)}</span>}</h4>
-      <Waterfall spans={data.spans} title={`Timeline for ${videoId}`} />
+      <StepsToggle note={configLine(s?.config) || undefined}>
+        <Waterfall spans={data.spans} title={`Timeline for ${videoId}`} />
+      </StepsToggle>
     </div>
   );
 }
