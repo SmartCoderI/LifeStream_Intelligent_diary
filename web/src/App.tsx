@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import Sidebar from "./components/layout/Sidebar";
+import AskPage from "./pages/AskPage";
 import DiariesPage from "./pages/DiariesPage";
 import VideoPage from "./pages/VideoPage";
 import VideosPage from "./pages/VideosPage";
@@ -15,6 +16,7 @@ export default function App() {
           <Route path="/videos/:id" element={<VideoPage />} />
           <Route path="/diaries" element={<DiariesPage />} />
           <Route path="/diaries/:date" element={<DiariesPage />} />
+          <Route path="/ask" element={<AskPage />} />
           <Route path="*" element={<p className="empty">Page not found.</p>} />
         </Routes>
       </main>

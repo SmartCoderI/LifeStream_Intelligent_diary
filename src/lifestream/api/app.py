@@ -8,9 +8,15 @@
     GET    /api/videos/{id}/media       the video file (supports seeking)
     GET    /api/videos/{id}/keyframes/{name}
     POST   /api/videos/{id}/retry       process again (reuses finished steps)
+    GET    /api/videos/{id}/speakers    speaker labels and names (F10)
+    PUT    /api/videos/{id}/speakers    set names; re-renders the diary and re-indexes
     DELETE /api/videos/{id}
     GET    /api/days                    dates that have diaries
     GET    /api/days/{date}             daily summary
+    POST   /api/query                   query_memory: answer a question with citations (F9)
+    GET    /api/search/status           is the search database reachable, what's indexed
+
+Speaker names from the registry are applied to everything returned.
 """
 
 from __future__ import annotations
@@ -22,18 +28,59 @@ import shutil
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Callable
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..config import Settings, get_settings
-from .jobs import STEP_LABELS, Job, JobQueue, ProcessFn, read_status, write_status
+from ..memory.registry import RegistryError, SpeakerRegistry, apply_names
+from ..memory.store import MemoryConfigError, MemoryUnavailable
 from ..processing.media import SUPPORTED_EXTENSIONS
+from .jobs import STEP_LABELS, Job, JobQueue, ProcessFn, read_status, write_status
 
 VIDEO_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 KEYFRAME = re.compile(r"^frame_\d+\.jpg$")
 CHUNK = 1024 * 1024
+
+
+class QueryIn(BaseModel):
+    question: str
+
+
+class SpeakersIn(BaseModel):
+    names: dict[str, str | None]
+
+
+AnswerFn = Callable[[str], dict]
+IndexFn = Callable[[Path, Settings], "int | None"]
+UnindexFn = Callable[[str, Settings], None]
+
+
+def _default_answer(settings: Settings) -> AnswerFn:
+    def answer(question: str) -> dict:
+        from ..intelligence.llm import AnthropicLLM
+        from ..memory.answer import answer_question
+        from ..memory.indexer import open_store
+
+        with open_store(settings) as store:
+            result = answer_question(question, store, AnthropicLLM(settings.llm_model),
+                                     dt.date.today(), settings.search_k)
+        return result.model_dump(mode="json")
+    return answer
+
+
+def _default_index(out_dir: Path, settings: Settings) -> int | None:
+    from ..memory.indexer import index_output
+    return index_output(out_dir, settings)
+
+
+def _default_unindex(video_id: str, settings: Settings) -> None:
+    from ..memory.indexer import open_store
+    with open_store(settings) as store:
+        store.delete_video(video_id)
 
 
 def _read_json(path: Path):
@@ -51,8 +98,14 @@ def create_app(
     start_worker: bool = True,
     web_dist: Path | None = Path("web/dist"),
     max_upload_bytes: int = 1024**3,
+    answer_fn: AnswerFn | None = None,
+    index_fn: IndexFn | None = None,
+    unindex_fn: UnindexFn | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
+    answer_fn = answer_fn or _default_answer(settings)
+    index_fn = index_fn or _default_index
+    unindex_fn = unindex_fn or _default_unindex
     out_root, uploads_dir = Path(out_root), Path(uploads_dir)
     out_root.mkdir(parents=True, exist_ok=True)
     uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -77,6 +130,12 @@ def create_app(
             raise HTTPException(404, "Video not found")
         return folder
 
+    def names_for(video_id: str) -> dict[str, str]:
+        try:
+            return SpeakerRegistry(settings.speakers_file).names_for(video_id)
+        except RegistryError:
+            return {}
+
     def video_path(folder: Path) -> Path | None:
         status = read_status(folder)
         meta = _read_json(folder / "metadata.json") or {}
@@ -99,7 +158,7 @@ def create_app(
         step = status.get("step")
         return {
             "video_id": folder.name,
-            "title": body.get("title") or Path(name).stem,
+            "title": apply_names(body.get("title"), names_for(folder.name)) if body.get("title") else Path(name).stem,
             "original_name": name,
             "date": (summary or {}).get("date") or meta.get("date") or status.get("date"),
             "duration": meta.get("duration"),
@@ -120,11 +179,14 @@ def create_app(
                 if f.is_dir() and VIDEO_ID.match(f.name)
                 and ((f / "metadata.json").exists() or (f / "status.json").exists())]
 
-    def speaker_stats(script: list[dict]) -> list[dict]:
+    def speaker_stats(script: list[dict], names: dict[str, str]) -> list[dict]:
+        """Talk time per speaker. `speaker` is the display name, `label` the raw label."""
         talk: dict[str, dict] = {}
         for s in script:
-            entry = talk.setdefault(s["speaker"], {"speaker": s["speaker"], "seconds": 0.0, "turns": 0,
-                                                   "first_seen": s["start"]})
+            label = s["speaker"]
+            entry = talk.setdefault(label, {"label": label, "speaker": names.get(label, label),
+                                            "name": names.get(label), "seconds": 0.0, "turns": 0,
+                                            "first_seen": s["start"]})
             entry["seconds"] += s["end"] - s["start"]
             entry["turns"] += 1
         total = sum(e["seconds"] for e in talk.values()) or 1.0
@@ -175,6 +237,7 @@ def create_app(
     @app.get("/api/videos/{video_id}")
     def get_video(video_id: str):
         folder = folder_for(video_id)
+        names = names_for(video_id)
         script = _read_json(folder / "script.json") or []
         keyframes = _read_json(folder / "keyframes.json") or []
         for k in keyframes:
@@ -182,10 +245,10 @@ def create_app(
         return {
             **item(folder),
             "metadata": _read_json(folder / "metadata.json"),
-            "summary": _read_json(folder / "summary.json"),
-            "script": script,
+            "summary": apply_names(_read_json(folder / "summary.json"), names),
+            "script": [{**s, "speaker": names.get(s["speaker"], s["speaker"])} for s in script],
             "keyframes": keyframes,
-            "speakers": speaker_stats(script),
+            "speakers": speaker_stats(script, names),
             "timings": _read_json(folder / "timings.json"),
         }
 
@@ -201,7 +264,8 @@ def create_app(
         if summary is None:
             raise HTTPException(404, "Summary not ready")
         md = folder / "summary.md"
-        return {"summary": summary, "markdown": md.read_text() if md.exists() else None}
+        return {"summary": apply_names(summary, names_for(video_id)),
+                "markdown": md.read_text() if md.exists() else None}
 
     @app.get("/api/videos/{video_id}/media")
     def get_media(video_id: str):
@@ -229,6 +293,35 @@ def create_app(
         jobs.submit(Job(video_id, path.resolve(), date))
         return item(folder)
 
+    @app.get("/api/videos/{video_id}/speakers")
+    def get_speakers(video_id: str):
+        folder = folder_for(video_id)
+        return speaker_stats(_read_json(folder / "script.json") or [], names_for(video_id))
+
+    @app.put("/api/videos/{video_id}/speakers")
+    def set_speakers(video_id: str, body: SpeakersIn):
+        """F10: name speakers. Updates the registry, re-renders the summary and diary,
+        and re-indexes the video so search finds the names."""
+        folder = folder_for(video_id)
+        script = _read_json(folder / "script.json") or []
+        known = {s["speaker"] for s in script}
+        unknown = sorted(set(body.names) - known)
+        if unknown:
+            raise HTTPException(400, f"Not a speaker in this video: {', '.join(unknown)}")
+        try:
+            SpeakerRegistry(settings.speakers_file).set_names(video_id, body.names)
+        except RegistryError as e:
+            raise HTTPException(400, str(e))
+        from ..pipeline import render_outputs
+        render_outputs(out_root, video_id, settings)
+        indexed, index_error = False, None
+        try:
+            indexed = index_fn(folder, settings) is not None
+        except (MemoryUnavailable, MemoryConfigError) as e:
+            index_error = str(e)
+        return {"speakers": speaker_stats(script, names_for(video_id)),
+                "indexed": indexed, "index_error": index_error}
+
     @app.delete("/api/videos/{video_id}", status_code=204)
     def delete_video(video_id: str):
         folder = folder_for(video_id)
@@ -241,6 +334,14 @@ def create_app(
             path.unlink()
         date = item(folder)["date"]
         shutil.rmtree(folder)
+        try:
+            SpeakerRegistry(settings.speakers_file).remove_video(video_id)
+        except RegistryError:
+            pass
+        try:
+            unindex_fn(video_id, settings)
+        except (MemoryUnavailable, MemoryConfigError):
+            pass  # nothing to remove if search isn't running
         if date:
             from ..pipeline import build_diary
             if build_diary(out_root, date) is None:
@@ -266,12 +367,45 @@ def create_app(
         for f in all_folders():
             summary = _read_json(f / "summary.json")
             if summary and summary.get("date") == date:
-                videos.append({**item(f), "summary": summary})
+                videos.append({**item(f), "summary": apply_names(summary, names_for(f.name))})
         if not videos:
             raise HTTPException(404, f"No diary for {date}")
         md = out_root / "diaries" / f"{date}.md"
         return {"date": date, "videos": sorted(videos, key=lambda v: v["uploaded_at"]),
                 "markdown": md.read_text() if md.exists() else None}
+
+    # ---------- search (Stage 2) ----------
+    @app.post("/api/query")
+    def query_memory(body: QueryIn):
+        question = body.question.strip()
+        if not question:
+            raise HTTPException(400, "Ask a question")
+        if len(question) > 1000:
+            raise HTTPException(400, "Question is too long (max 1000 characters)")
+        from ..intelligence.llm import LLMError
+        try:
+            result = answer_fn(question)
+        except MemoryUnavailable as e:
+            raise HTTPException(503, str(e))
+        except MemoryConfigError as e:
+            raise HTTPException(409, str(e))
+        except LLMError as e:
+            raise HTTPException(502, str(e))
+        # add what the dashboard needs to show each source
+        for c in result.get("citations", []):
+            folder = out_root / c["video_id"]
+            c["thumbnail"] = item(folder)["thumbnail"] if folder.exists() else None
+        return result
+
+    @app.get("/api/search/status")
+    def search_status():
+        from ..memory.indexer import open_store
+        try:
+            with open_store(settings) as store:
+                counts = store.count()
+            return {"available": True, **counts, "error": None}
+        except (MemoryUnavailable, MemoryConfigError) as e:
+            return {"available": False, "videos": 0, "chunks": 0, "error": str(e)}
 
     # ---------- built frontend (npm run build) ----------
     if web_dist is not None and (Path(web_dist) / "index.html").exists():

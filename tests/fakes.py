@@ -51,3 +51,7 @@ def fake_diarize(wav, settings, **hints):
 
 def fake_visual(video, out_dir, duration, threshold, min_scene_len_s, max_keyframes, keyframe_width):
     return [Scene(start=0.0, end=duration)], [Keyframe(time=1.0, path="keyframes/none.jpg")]
+
+
+def fake_index(out_dir, settings):
+    return 0

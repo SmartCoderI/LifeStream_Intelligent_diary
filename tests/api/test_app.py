@@ -10,9 +10,9 @@ from lifestream.api.app import create_app
 from lifestream.config import Settings
 from lifestream.pipeline import Components, process_video
 
-from fakes import FakeLLM, fake_diarize, fake_transcribe, fake_visual
+from fakes import FakeLLM, fake_diarize, fake_index, fake_transcribe, fake_visual
 
-FAKES = Components(transcribe=fake_transcribe, diarize=fake_diarize, visual=fake_visual)
+FAKES = Components(transcribe=fake_transcribe, diarize=fake_diarize, visual=fake_visual, index=fake_index)
 
 
 def failing_process(*args, **kwargs):
@@ -25,7 +25,8 @@ def make_client(tmp_path):
         process_fn = process_fn or partial(process_video, llm=FakeLLM("meeting"), components=FAKES,
                                            parallel=False)
         app = create_app(out_root=tmp_path / "out", uploads_dir=tmp_path / "uploads",
-                         settings=Settings(), process_fn=process_fn, web_dist=None)
+                         settings=Settings(), process_fn=process_fn, web_dist=None,
+                         index_fn=fake_index, unindex_fn=lambda vid, settings: None)
         return TestClient(app)
     return build
 
@@ -154,3 +155,111 @@ def test_delete_removes_video_and_upload(make_client, format_samples, tmp_path):
         assert client.get("/api/videos").json() == []
         assert list((tmp_path / "uploads").iterdir()) == []
         assert client.get("/api/days").json() == []
+
+
+# ---------------- Stage 2 endpoints ----------------
+from lifestream.intelligence.llm import LLMError  # noqa: E402
+from lifestream.memory.store import MemoryUnavailable  # noqa: E402
+
+
+def stage2_client(tmp_path, answer_fn=None, index_fn=None, unindex_fn=None):
+    process = partial(process_video, llm=FakeLLM("meeting"), components=FAKES, parallel=False)
+    app = create_app(out_root=tmp_path / "out", uploads_dir=tmp_path / "uploads", settings=Settings(),
+                     process_fn=process, web_dist=None,
+                     answer_fn=answer_fn or (lambda q: {"question": q, "answer": "a", "found": True,
+                                                        "citations": [], "date_from": None, "date_to": None,
+                                                        "time_phrase": None}),
+                     index_fn=index_fn or fake_index, unindex_fn=unindex_fn or (lambda v, s: None))
+    return TestClient(app)
+
+
+def test_query_returns_answer_with_thumbnails(tmp_path, format_samples):
+    def answer(q):
+        return {"question": q, "answer": "Fix the logo.", "found": True, "date_from": "2026-11-02",
+                "date_to": "2026-11-08", "time_phrase": "last week",
+                "citations": [{"video_id": "sample", "title": "Frontend sync", "date": "2026-11-04",
+                               "kind": "summary", "section": "Topic", "start": 5, "end": 9, "snippet": "s"}]}
+    with stage2_client(tmp_path, answer_fn=answer) as client:
+        vid = upload(client, format_samples["mp4"]).json()["video_id"]
+        wait_done(client, vid)
+        r = client.post("/api/query", json={"question": "what about the logo last week?"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["answer"] == "Fix the logo." and body["date_from"] == "2026-11-02"
+        assert "thumbnail" in body["citations"][0]
+
+
+@pytest.mark.parametrize("error, code", [
+    (MemoryUnavailable("Can't reach the search database."), 503),
+    (LLMError("ANTHROPIC_API_KEY is missing"), 502),
+])
+def test_query_errors(tmp_path, error, code):
+    def fail(q):
+        raise error
+    with stage2_client(tmp_path, answer_fn=fail) as client:
+        r = client.post("/api/query", json={"question": "hi"})
+        assert r.status_code == code and str(error) in r.json()["detail"]
+
+
+def test_query_validation(tmp_path):
+    with stage2_client(tmp_path) as client:
+        assert client.post("/api/query", json={"question": "  "}).status_code == 400
+        assert client.post("/api/query", json={"question": "x" * 1001}).status_code == 400
+
+
+def test_name_speakers_updates_everything(tmp_path, format_samples):
+    indexed = []
+    with stage2_client(tmp_path, index_fn=lambda out, s: indexed.append(out.name) or 5) as client:
+        vid = upload(client, format_samples["mp4"]).json()["video_id"]
+        wait_done(client, vid)
+        indexed.clear()
+
+        r = client.put(f"/api/videos/{vid}/speakers", json={"names": {"SPEAKER_00": "Maya"}})
+        assert r.status_code == 200 and r.json()["indexed"] is True
+        assert indexed == [vid]  # re-indexed with the new name
+
+        speakers = {s["label"]: s for s in client.get(f"/api/videos/{vid}/speakers").json()}
+        assert speakers["SPEAKER_00"]["speaker"] == "Maya" and speakers["SPEAKER_01"]["name"] is None
+
+        detail = client.get(f"/api/videos/{vid}").json()
+        assert detail["script"][0]["speaker"] == "Maya"
+        assert detail["summary"]["meeting"]["topics"][0]["points"][0]["speaker"] == "Maya"
+        assert "**[00:00:00] Maya:**" in client.get(f"/api/videos/{vid}/summary").json()["markdown"]
+        day = client.get("/api/days/2026-11-04").json()
+        assert "Maya" in day["markdown"]
+        assert day["videos"][0]["summary"]["meeting"]["attendees"][0] == "Maya"
+
+        # clearing a name restores the label
+        client.put(f"/api/videos/{vid}/speakers", json={"names": {"SPEAKER_00": ""}})
+        assert client.get(f"/api/videos/{vid}").json()["script"][0]["speaker"] == "SPEAKER_00"
+
+
+def test_name_speakers_rejects_unknown_labels(tmp_path, format_samples):
+    with stage2_client(tmp_path) as client:
+        vid = upload(client, format_samples["mp4"]).json()["video_id"]
+        wait_done(client, vid)
+        r = client.put(f"/api/videos/{vid}/speakers", json={"names": {"SPEAKER_09": "X"}})
+        assert r.status_code == 400 and "SPEAKER_09" in r.json()["detail"]
+
+
+def test_names_saved_even_if_search_is_down(tmp_path, format_samples):
+    def down(out, s):
+        raise MemoryUnavailable("Can't reach the search database.")
+    with stage2_client(tmp_path, index_fn=down) as client:
+        vid = upload(client, format_samples["mp4"]).json()["video_id"]
+        wait_done(client, vid)
+        r = client.put(f"/api/videos/{vid}/speakers", json={"names": {"SPEAKER_01": "Leo"}})
+        assert r.status_code == 200
+        assert r.json()["indexed"] is False and "search database" in r.json()["index_error"]
+
+
+def test_delete_also_removes_from_search_and_registry(tmp_path, format_samples):
+    removed = []
+    with stage2_client(tmp_path, unindex_fn=lambda v, s: removed.append(v)) as client:
+        vid = upload(client, format_samples["mp4"]).json()["video_id"]
+        wait_done(client, vid)
+        client.put(f"/api/videos/{vid}/speakers", json={"names": {"SPEAKER_00": "Maya"}})
+        assert client.delete(f"/api/videos/{vid}").status_code == 204
+        assert removed == [vid]
+        from lifestream.memory.registry import SpeakerRegistry
+        assert SpeakerRegistry(Settings().speakers_file).names_for(vid) == {}

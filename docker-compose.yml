@@ -1,0 +1,21 @@
+# Local database for Stage 2 search (Postgres + pgvector).
+#   docker compose up -d db      start
+#   docker compose down          stop (data is kept in the volume)
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: lifestream
+      POSTGRES_PASSWORD: lifestream
+      POSTGRES_DB: lifestream
+    ports:
+      - "5433:5432"   # 5433 so it doesn't clash with a Postgres you may already run
+    volumes:
+      - lifestream-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lifestream"]
+      interval: 2s
+      retries: 30
+
+volumes:
+  lifestream-pg:

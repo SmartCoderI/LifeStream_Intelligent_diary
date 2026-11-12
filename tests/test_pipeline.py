@@ -5,9 +5,9 @@ import json
 from lifestream.config import Settings
 from lifestream.pipeline import Components, process_video, video_id_for
 
-from fakes import FakeLLM, fake_diarize, fake_transcribe, fake_visual
+from fakes import FakeLLM, fake_diarize, fake_index, fake_transcribe, fake_visual
 
-FAKES = Components(transcribe=fake_transcribe, diarize=fake_diarize, visual=fake_visual)
+FAKES = Components(transcribe=fake_transcribe, diarize=fake_diarize, visual=fake_visual, index=fake_index)
 
 
 def run(video, out, llm, date="2026-11-03", **kw):
@@ -35,7 +35,7 @@ def test_rerun_reuses_saved_steps(format_samples, tmp_path):
     calls = []
     components = Components(transcribe=lambda *a: calls.append("asr") or [],
                             diarize=lambda *a, **k: calls.append("diar") or [],
-                            visual=fake_visual)
+                            visual=fake_visual, index=fake_index)
     process_video(format_samples["mp4"], "2026-11-03", tmp_path, Settings(), llm=FakeLLM(),
                   components=components, parallel=False, log=lambda m: None)
     assert calls == []

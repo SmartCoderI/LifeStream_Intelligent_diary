@@ -17,3 +17,10 @@ def scene_video(tmp_path_factory):
     path = tmp_path_factory.mktemp("scenes") / "cuts.mp4"
     cuts = testdata.make_scene_video(path)
     return path, cuts
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path, monkeypatch):
+    """Tests never touch the real speaker registry or search database."""
+    monkeypatch.setenv("SPEAKERS_FILE", str(tmp_path / "speakers.yaml"))
+    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody:nothing@127.0.0.1:1/none")

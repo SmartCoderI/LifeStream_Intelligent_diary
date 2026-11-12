@@ -43,6 +43,13 @@ class Settings:
     llm_effort: str = field(default_factory=lambda: _env("LLM_EFFORT", "medium"))
     classify_window_s: float = field(default_factory=lambda: float(_env("CLASSIFY_WINDOW_S", "300")))
 
+    # Memory (Stage 2): Postgres + pgvector, local embeddings, speaker names.
+    database_url: str = field(default_factory=lambda: _env(
+        "DATABASE_URL", "postgresql://lifestream:lifestream@localhost:5433/lifestream"))
+    embed_model: str = field(default_factory=lambda: _env("EMBED_MODEL", "BAAI/bge-small-en-v1.5"))
+    speakers_file: str = field(default_factory=lambda: _env("SPEAKERS_FILE", "data/speakers.yaml"))
+    search_k: int = field(default_factory=lambda: int(_env("SEARCH_K", "6")))
+
 
 def get_settings() -> Settings:
     return Settings()

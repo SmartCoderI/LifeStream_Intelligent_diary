@@ -1,6 +1,6 @@
 import { ArrowLeft, BookOpen, Check, Clapperboard, FileText, Loader2, Play, Users } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, type VideoDetail } from "../lib/api";
 import DiaryTab from "../components/video/DiaryTab";
 import ScenesTab from "../components/video/ScenesTab";
@@ -26,6 +26,7 @@ const STEPS = [
   ["merging", "Building the script"],
   ["classifying", "Classifying video"],
   ["summarizing", "Writing the diary"],
+  ["indexing", "Adding to search"],
 ] as const;
 
 function keyMoments(v: VideoDetail): { time: number; label: string }[] {
@@ -75,7 +76,9 @@ function Processing({ video }: { video: VideoDetail }) {
 
 export default function VideoPage() {
   const { id = "" } = useParams();
-  const { data: video, error } = usePolling(() => api.getVideo(id), (v) => v.status === "queued" || v.status === "processing");
+  const [params] = useSearchParams();
+  const startAt = Number(params.get("t") ?? "");
+  const { data: video, error, refresh } = usePolling(() => api.getVideo(id), (v) => v.status === "queued" || v.status === "processing");
   const [tab, setTab] = useState<Tab>("diary");
   const [time, setTime] = useState(0);
   const player = useRef<HTMLVideoElement>(null);
@@ -92,9 +95,18 @@ export default function VideoPage() {
     el.play().catch(() => { /* autoplay may be blocked; position is still set */ });
   };
 
+  // opened from a search source (?t=seconds): start the player there
+  const ready = video?.status === "done" && !!video.summary;
+  useEffect(() => {
+    const el = player.current;
+    if (!ready || !el || !(startAt > 0)) return;
+    const jump = () => { el.currentTime = startAt; };
+    if (el.readyState >= 1) jump();
+    else el.addEventListener("loadedmetadata", jump, { once: true });
+  }, [ready, startAt]);
+
   if (error) return <div className="card empty error-text" role="alert">{error}</div>;
   if (!video) return <div className="card empty">Loading…</div>;
-  const ready = video.status === "done" && video.summary;
 
   return (
     <>
@@ -134,7 +146,7 @@ export default function VideoPage() {
             <div>
               {tab === "diary" && <DiaryTab summary={video.summary!} colors={colors} onSeek={seek} />}
               {tab === "transcript" && <TranscriptTab script={video.script} colors={colors} currentTime={time} onSeek={seek} />}
-              {tab === "speakers" && <SpeakersTab speakers={video.speakers} colors={colors} />}
+              {tab === "speakers" && <SpeakersTab videoId={video.video_id} speakers={video.speakers} colors={colors} onSaved={refresh} />}
               {tab === "scenes" && <ScenesTab keyframes={video.keyframes} onSeek={seek} />}
             </div>
           </div>

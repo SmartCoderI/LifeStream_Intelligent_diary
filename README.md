@@ -3,8 +3,8 @@
 Turns video recordings (vlogs, meetings, body-cam footage) into a timestamped
 script and a structured daily diary.
 
-**Status:** Stage 1 (core processing engine, local), without F7 (cloud infrastructure),
-plus a local web dashboard (upload, progress, diary view).
+**Status (all local):** Stage 1 (core processing engine; F7 cloud infrastructure not yet),
+Stage 2 (memory: search, answers with citations, speaker names), and a web dashboard.
 
 ## Pipeline
 
@@ -14,6 +14,9 @@ video ─► F1 ffprobe check + FFmpeg audio (16 kHz mono WAV)
       └─► visual branch: F4 PySceneDetect cuts ─► FFmpeg keyframes      (separate process)
       ─► F3 merge words + speakers into turns ─► F5 attach keyframes to turns
       ─► F6 classify meeting | vlog ─► LLM summary (JSON) ─► Markdown ─► daily diary
+      ─► F8 chunk + embed (bge-small, local) ─► Postgres + pgvector
+
+question ─► F9 date phrase -> date filter ─► vector search ─► Claude answer with citations
 ```
 
 Speaker identification uses acoustic models only (pyannote); no LLM decides who is speaking.
@@ -38,11 +41,20 @@ src/lifestream/
 ├── api/                    Ingestion + API (local F11/F12)
 │   ├── app.py              REST API for the dashboard
 │   └── jobs.py             background processing queue
-└── evaluation/             success metrics (M1, M3b) and generated test data
+├── memory/                 Memory Layer (Stage 2: F8-F10)
+│   ├── registry.py         F10 speaker names (YAML, per video)
+│   ├── chunking.py         F8 transcript windows + summary paragraphs
+│   ├── embeddings.py       local embedding model
+│   ├── store.py            Postgres + pgvector: schema, indexing, search
+│   ├── indexer.py          connects processed videos to the index
+│   ├── query.py            F9 "last week" -> date range
+│   └── answer.py           F9 answers with citations
+└── evaluation/             success metrics (M1, M2, M3b) and generated test data
 
 tests/                      same layout as src/lifestream/
+docs/rag-notes.md           RAG background and the choices made here
 web/src/
-├── pages/                  Videos, Video (diary), Diaries
+├── pages/                  Videos, Video (diary), Diaries, Ask
 ├── components/             layout/, library/ (upload + list), video/ (diary tabs)
 └── lib/                    API client, formatting, polling
 ```
@@ -74,7 +86,9 @@ Ctrl+C stops both the backend and the web server.
 - **Video page**: player plus Diary / Transcript / Speakers / Scenes tabs; every timestamp
   and key moment jumps the player to that point.
 - **Diaries**: one entry per day, combining all videos recorded that day.
-- Ask / Search arrives with Stage 2.
+- **Ask / Search**: questions in plain language ("What did we discuss about the frontend
+  last week?"); answers cite the video and moment, and each source opens the video there.
+- **Speakers tab**: name speakers; the diary, transcript and search use the names.
 
 Uploads are saved in `data/uploads/` and processed one at a time in the background.
 Web tests: `cd web && npm test`.
@@ -134,6 +148,22 @@ V1 uses macOS text-to-speech voices, which are easier than real voices. Replace 
 a hand-labeled real recording (RTTM file) for the final M1 check.
 
 Test video slots and their expected answers are in `labels/`.
+
+## Search and speaker names (Stage 2)
+
+The search database runs in Docker (`./dev.sh` starts it, or `docker compose up -d db`).
+Finished videos are indexed automatically.
+
+```bash
+uv run lifestream index                     # (re)index all processed videos
+uv run lifestream ask "What did we discuss about the frontend last week?"
+uv run lifestream speakers multiple-student SPEAKER_04="Ms. Lee"   # names live in data/speakers.yaml
+uv run lifestream eval-retrieval            # F9 recall@k / MRR + M2 on generated videos
+uv run lifestream eval-questions            # 16 questions about the real videos (labels/questions.yaml)
+```
+
+Database tests start a temporary Postgres container, so Docker must be running for `uv run pytest`
+(they are skipped otherwise). See [docs/rag-notes.md](docs/rag-notes.md) for how search works.
 
 ## Settings
 

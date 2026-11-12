@@ -28,6 +28,15 @@ fi
 uv sync --quiet
 [ -d web/node_modules ] || (echo "Installing web packages..." && cd web && npm install --silent)
 
+# search database (Stage 2). It keeps running after Ctrl+C; stop it with `docker compose down`.
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  docker compose up -d --wait db >/dev/null 2>&1 \
+    && echo "Search database: running" \
+    || echo "Warning: couldn't start the search database; Ask / Search won't work."
+else
+  echo "Warning: Docker isn't running, so Ask / Search won't work. Start Docker Desktop and re-run."
+fi
+
 pids=()
 # stop a process and everything it started (uv -> python, npm -> vite -> esbuild)
 kill_tree() {

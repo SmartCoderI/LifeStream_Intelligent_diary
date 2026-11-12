@@ -1,0 +1,40 @@
+# Hand-written questions about the real test videos (F9 real-data check).
+# `videos`: any of these counts as the right answer. conversation and
+# frontend-sync are the same recording (CLI run and dashboard upload).
+# Run: uv run lifestream eval-questions
+today: 2026-11-11
+questions:
+  # student meeting (multiple-student, 2026-11-04)
+  - question: Why are students skipping school on Fridays?
+    videos: [multiple-student]
+  - question: What was the idea to get students to come on Fridays?
+    videos: [multiple-student]
+  - question: How many days has John Smith missed?
+    videos: [multiple-student]
+  - question: Why is John Smith stressed?
+    videos: [multiple-student]
+  - question: Who offered to find child care resources?
+    videos: [multiple-student]
+  - question: What are the posters about?
+    videos: [multiple-student]
+  - question: Is illness causing absences?
+    videos: [multiple-student]
+  - question: What happened in the student success meeting last Tuesday?
+    videos: [multiple-student]
+  # frontend meeting (conversation 2026-11-05, frontend-sync 2026-11-06)
+  - question: What did we discuss about the frontend last week?
+    videos: [conversation, frontend-sync]
+  - question: Why does the mobile layout break?
+    videos: [conversation, frontend-sync]
+  - question: When is the marketing demo?
+    videos: [conversation, frontend-sync]
+  - question: How long do the dashboard charts take to load?
+    videos: [conversation, frontend-sync]
+  - question: Which dark mode colors fail the contrast check?
+    videos: [conversation, frontend-sync]
+  - question: Who is fixing the logo?
+    videos: [conversation, frontend-sync]
+  - question: When is the next frontend meeting?
+    videos: [conversation, frontend-sync]
+  - question: What did we decide about lazy loading charts?
+    videos: [conversation, frontend-sync]

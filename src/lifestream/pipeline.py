@@ -3,7 +3,7 @@
     video -> F1 probe + audio -> [audio branch: F3 ASR, F2 diarization]
                               -> [visual branch: F4 scenes + keyframes]   (parallel)
           -> F3 merge into turns -> F5 attach frames -> F6 classify + summarize
-          -> daily diary
+          -> daily diary -> search index (Stage 2)
 
 Each step's output is saved in the video's folder. On a re-run, finished
 steps are loaded from disk instead of recomputed (use force=True to redo).
@@ -27,9 +27,11 @@ from .intelligence import summarize
 from .processing import asr, diarize, media, merge, scenes, sync
 from .config import Settings
 from .intelligence.llm import AnthropicLLM, LLMClient
+from .memory.registry import SpeakerRegistry, apply_names
 from .schemas import Keyframe, Scene, ScriptSegment, SpeakerSegment, VideoSummary, Word
 from .timing import Timings
 
+IndexFn = Callable[[Path, Settings], "int | None"]
 WordsFn = Callable[[Path, Settings], list[Word]]
 DiarizeFn = Callable[..., list[SpeakerSegment]]
 VisualFn = Callable[..., tuple[list[Scene], list[Keyframe]]]
@@ -42,6 +44,7 @@ class Components:
     transcribe: WordsFn = asr.transcribe
     diarize: DiarizeFn = diarize.diarize
     visual: VisualFn = scenes.run_visual_branch
+    index: IndexFn | None = None  # None = the real search index (memory.indexer.index_output)
 
 
 def video_id_for(path: str | Path, out_root: str | Path | None = None) -> str:
@@ -222,8 +225,11 @@ def process_video(
             meeting=body if classification.type == "meeting" else None,
         )
         (out / "summary.json").write_text(result.model_dump_json(indent=2))
-        (out / "summary.md").write_text(summarize.render_summary(result))
-        build_diary(out_root, date)
+        render_outputs(out_root, vid, settings)
+
+        # ---- Stage 2: add to the search index ----
+        step("indexing")
+        _index(out, settings, components, timings, log, vid)
 
     timings.save(out / "timings.json", total=time.perf_counter() - t0)
     if cached:
@@ -231,12 +237,45 @@ def process_video(
     return out
 
 
-def build_diary(out_root: str | Path, date: str) -> Path | None:
+def _index(out: Path, settings: Settings, components: Components, timings: Timings,
+           log: Callable[[str], None], vid: str) -> None:
+    from .memory.store import MemoryUnavailable
+
+    index_fn = components.index
+    if index_fn is None:
+        from .memory.indexer import index_output as index_fn
+    try:
+        with timings.step("index"):
+            n = index_fn(out, settings)
+        if n is not None:
+            log(f"[{vid}] indexed {n} chunks for search")
+    except MemoryUnavailable as e:
+        # the diary is still complete; search can be updated later with `lifestream index`
+        log(f"[{vid}] search index not updated: {e}")
+
+
+def render_outputs(out_root: str | Path, video_id: str, settings: Settings) -> None:
+    """Write summary.md and the day's diary with current speaker names (F10).
+    Called after summarizing and whenever names change."""
+    out_root = Path(out_root)
+    path = out_root / video_id / "summary.json"
+    if not path.exists():
+        return
+    summary = VideoSummary.model_validate(json.loads(path.read_text()))
+    registry = SpeakerRegistry(settings.speakers_file)
+    named = apply_names(summary, registry.names_for(video_id))
+    (out_root / video_id / "summary.md").write_text(summarize.render_summary(named))
+    build_diary(out_root, summary.date, registry)
+
+
+def build_diary(out_root: str | Path, date: str, registry: SpeakerRegistry | None = None) -> Path | None:
     """(Re)build the daily summary from every processed video with this date."""
     out_root = Path(out_root)
     videos = summarize.load_summaries(out_root, date)
     if not videos:
         return None
+    if registry is not None:
+        videos = [apply_names(v, registry.names_for(v.video_id)) for v in videos]
     path = out_root / "diaries" / f"{date}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(summarize.render_diary(date, videos))

@@ -57,3 +57,28 @@ test("failed video shows the error", async () => {
   renderAt("/videos/travel-vlog");
   expect(await screen.findByRole("alert")).toHaveTextContent("HF_TOKEN is not set.");
 });
+
+test("naming speakers saves and refreshes the page", async () => {
+  let saved: Record<string, string> | null = null;
+  server.use(http.put("*/api/videos/:id/speakers", async ({ request }) => {
+    saved = ((await request.json()) as { names: Record<string, string> }).names;
+    return HttpResponse.json({ speakers: [], indexed: true, index_error: null });
+  }));
+  renderAt("/videos/team-meeting");
+  await screen.findByText("Key Moments");
+  await userEvent.click(screen.getByRole("tab", { name: /Speakers/ }));
+  await userEvent.click(screen.getByRole("button", { name: /Name speakers/ }));
+  await userEvent.type(screen.getByLabelText("Name for SPEAKER_00"), "Ms. Lee");
+  await userEvent.click(screen.getByRole("button", { name: /Save names/ }));
+  expect(await screen.findByRole("status")).toHaveTextContent("Names saved");
+  expect(saved).toEqual({ SPEAKER_00: "Ms. Lee", SPEAKER_01: "" });
+});
+
+test("opening with ?t= starts the video at that time", async () => {
+  renderAt("/videos/team-meeting?t=42");
+  await screen.findByText("Key Moments");
+  const video = document.querySelector("video")!;
+  Object.defineProperty(video, "readyState", { configurable: true, value: 1 });
+  video.dispatchEvent(new Event("loadedmetadata"));
+  expect(video.currentTime).toBe(42);
+});

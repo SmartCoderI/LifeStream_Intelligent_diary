@@ -137,6 +137,146 @@ def download_ami(out: Path = typer.Option(Path("data/ami")), meeting: str = "ES2
     typer.echo(fetch(out, meeting))
 
 
+# ---------------- Stage 2: memory ----------------
+def _store_or_exit(schema: str = "public"):
+    from .memory.indexer import open_store
+    from .memory.store import MemoryConfigError, MemoryUnavailable
+
+    try:
+        return open_store(get_settings(), schema)
+    except (MemoryUnavailable, MemoryConfigError) as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2)
+
+
+@app.command()
+def index(
+    out: Path = typer.Option(DEFAULT_OUT),
+    rebuild: bool = typer.Option(False, help="Drop the index and re-embed every video."),
+):
+    """Add every finished video to the search index (F8)."""
+    from .memory.indexer import index_output
+
+    settings = get_settings()
+    with _store_or_exit() as store:
+        if rebuild:
+            store.reset()
+        total = 0
+        for folder in sorted(p for p in out.iterdir() if (p / "summary.json").exists()):
+            n = index_output(folder, settings, store)
+            total += n or 0
+            typer.echo(f"  {folder.name}: {n} chunks")
+        counts = store.count()
+    typer.echo(f"Indexed {counts['videos']} videos, {counts['chunks']} chunks.")
+
+
+@app.command()
+def ask(
+    question: str,
+    today: Optional[str] = typer.Option(None, help="Pretend today is YYYY-MM-DD (for 'last week' etc.)."),
+    show_sources: bool = typer.Option(True),
+):
+    """Ask a question about your videos (F9)."""
+    from .intelligence.llm import AnthropicLLM
+    from .memory.answer import answer_question
+    from .timing import fmt_ts
+
+    settings = get_settings()
+    day = dt.date.fromisoformat(today) if today else dt.date.today()
+    with _store_or_exit() as store:
+        result = answer_question(question, store, AnthropicLLM(settings.llm_model), day, settings.search_k)
+    if result.date_from:
+        typer.secho(f"(searched {result.date_from} to {result.date_to})", dim=True)
+    typer.echo(result.answer)
+    if show_sources and result.citations:
+        typer.echo("\nSources:")
+        for c in result.citations:
+            typer.echo(f"  [{c.video_id} @ {fmt_ts(c.start)}] {c.title} · {c.date} · {c.section}")
+
+
+@app.command()
+def speakers(
+    video_id: str,
+    names: list[str] = typer.Argument(None, help="LABEL=Name pairs, e.g. SPEAKER_00=Alice (empty name removes)."),
+    out: Path = typer.Option(DEFAULT_OUT),
+):
+    """Show or set speaker names for a video (F10). Re-renders its diary and re-indexes it."""
+    from .memory.indexer import index_output
+    from .memory.registry import SpeakerRegistry
+    from .memory.store import MemoryUnavailable
+    from .pipeline import load_script, render_outputs
+
+    settings = get_settings()
+    if not (out / video_id / "script.json").exists():
+        typer.secho(f"No processed video '{video_id}' in {out}", fg="red", err=True)
+        raise typer.Exit(1)
+    registry = SpeakerRegistry(settings.speakers_file)
+    if names:
+        pairs = {}
+        for pair in names:
+            label, sep, name = pair.partition("=")
+            if not sep:
+                typer.secho(f"Use LABEL=Name, got {pair!r}", fg="red", err=True)
+                raise typer.Exit(1)
+            pairs[label.strip()] = name
+        registry.set_names(video_id, pairs)
+        render_outputs(out, video_id, settings)
+        try:
+            index_output(out / video_id, settings)
+            typer.echo("Saved. Diary re-rendered and search index updated.")
+        except MemoryUnavailable:
+            typer.echo("Saved. Diary re-rendered (search database not running; run `lifestream index` later).")
+    current = registry.names_for(video_id)
+    for label in dict.fromkeys(s.speaker for s in load_script(out / video_id)):
+        typer.echo(f"  {label}: {current.get(label, '(no name)')}")
+
+
+@app.command("eval-retrieval")
+def eval_retrieval(k: int = typer.Option(3)):
+    """F9 data test + M2, on generated videos (uses its own database schema)."""
+    from .evaluation.retrieval import evaluate
+
+    with _store_or_exit("eval_retrieval") as store:
+        report = evaluate(store, k=k)
+    for r in report.rows:
+        typer.echo(f"  rank {r['rank'] or '-':>2}  {r['question']}  ->  {r['top']}")
+    typer.echo(f"Recall@{k}: {report.recall_at_k:.0%}   MRR: {report.mrr:.2f}")
+    typer.secho(f"M2 {'PASS' if report.m2_passed else 'FAIL'}: top result {report.m2_top}",
+                fg="green" if report.m2_passed else "red")
+    raise typer.Exit(0 if report.m2_passed else 1)
+
+
+@app.command("eval-questions")
+def eval_questions(
+    labels: Path = typer.Option(Path("labels/questions.yaml")),
+    k: int = typer.Option(3),
+):
+    """Hand-written questions about your real videos: is the right video in the top k?"""
+    import yaml
+
+    from .memory.query import parse_query
+
+    spec = yaml.safe_load(labels.read_text())
+    today = dt.date.fromisoformat(str(spec.get("today"))) if spec.get("today") else dt.date.today()
+    hits = 0
+    with _store_or_exit() as store:
+        indexed = store.indexed_videos()
+        for q in spec["questions"]:
+            expected = set(q["videos"])
+            if not expected & indexed:
+                typer.echo(f"  skip  {q['question']}  (video not indexed)")
+                continue
+            parsed = parse_query(q["question"], today)
+            found = store.search(parsed.text, k=k, date_from=parsed.date_from, date_to=parsed.date_to)
+            rank = next((i for i, h in enumerate(found, 1) if h.video_id in expected), None)
+            hits += bool(rank)
+            typer.echo(f"  {'hit ' if rank else 'MISS'}  {q['question']}"
+                       + (f"  (rank {rank}: {found[rank - 1].section})" if rank else
+                          f"  (got {found[0].video_id if found else 'nothing'})"))
+    asked = sum(1 for q in spec["questions"] if set(q["videos"]) & indexed)
+    typer.echo(f"Top-{k} hit rate: {hits}/{asked}")
+
+
 @app.command()
 def serve(
     host: str = typer.Option("127.0.0.1"),

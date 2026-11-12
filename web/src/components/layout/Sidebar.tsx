@@ -14,9 +14,7 @@ export default function Sidebar() {
       </div>
       <NavLink to="/videos" className={link}><Video size={19} /> Videos</NavLink>
       <NavLink to="/diaries" className={link}><BookOpen size={19} /> Diaries</NavLink>
-      <span className="nav-link disabled" title="Semantic search arrives in Stage 2">
-        <Search size={19} /> Ask / Search <span className="nav-tag">Stage 2</span>
-      </span>
+      <NavLink to="/ask" className={link}><Search size={19} /> Ask / Search</NavLink>
     </nav>
   );
 }

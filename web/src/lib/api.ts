@@ -50,7 +50,21 @@ export interface VideoSummary {
 }
 export interface ScriptSegment { start: number; end: number; speaker: string; text: string; frames: string[] }
 export interface Keyframe { time: number; path: string; url: string }
-export interface SpeakerStat { speaker: string; seconds: number; turns: number; share: number; first_seen: number }
+/** `speaker` is the display name (registered name or label); `label` is the raw diarization label. */
+export interface SpeakerStat {
+  label: string; speaker: string; name: string | null;
+  seconds: number; turns: number; share: number; first_seen: number;
+}
+
+export interface Citation {
+  video_id: string; title: string; date: string; kind: "summary" | "transcript"; section: string;
+  start: number; end: number; snippet: string; thumbnail: string | null;
+}
+export interface AnswerResult {
+  question: string; answer: string; found: boolean; citations: Citation[];
+  date_from: string | null; date_to: string | null; time_phrase: string | null;
+}
+export interface SearchStatus { available: boolean; videos: number; chunks: number; error: string | null }
 
 export interface VideoDetail extends VideoItem {
   summary: VideoSummary | null;
@@ -72,12 +86,28 @@ async function get<T>(url: string): Promise<T> {
   return res.json();
 }
 
+async function send<T>(method: string, url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `${res.status} ${res.statusText}`);
+  return data as T;
+}
+
 export const api = {
   listVideos: () => get<VideoItem[]>("/api/videos"),
   getVideo: (id: string) => get<VideoDetail>(`/api/videos/${id}`),
   listDays: () => get<DayItem[]>("/api/days"),
   getDay: (date: string) => get<DayDetail>(`/api/days/${date}`),
   mediaUrl: (id: string) => `/api/videos/${id}/media`,
+  searchStatus: () => get<SearchStatus>("/api/search/status"),
+
+  ask: (question: string) => send<AnswerResult>("POST", "/api/query", { question }),
+
+  setSpeakers: (id: string, names: Record<string, string>) =>
+    send<{ speakers: SpeakerStat[]; indexed: boolean; index_error: string | null }>(
+      "PUT", `/api/videos/${id}/speakers`, { names }),
 
   async retryVideo(id: string): Promise<void> {
     const res = await fetch(`/api/videos/${id}/retry`, { method: "POST" });

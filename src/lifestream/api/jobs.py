@@ -29,6 +29,7 @@ STEP_PROGRESS = {
     "merging": 80,
     "classifying": 85,
     "summarizing": 90,
+    "indexing": 96,
     "done": 100,
 }
 STEP_LABELS = {
@@ -41,6 +42,7 @@ STEP_LABELS = {
     "merging": "Building the script",
     "classifying": "Classifying video",
     "summarizing": "Writing the diary",
+    "indexing": "Adding to search",
     "done": "Completed",
     "failed": "Failed",
 }

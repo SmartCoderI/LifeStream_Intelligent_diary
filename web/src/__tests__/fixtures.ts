@@ -1,4 +1,4 @@
-import type { DayDetail, VideoDetail, VideoItem } from "../lib/api";
+import type { AnswerResult, DayDetail, VideoDetail, VideoItem } from "../lib/api";
 
 const now = Date.now() / 1000;
 
@@ -51,8 +51,8 @@ export const meetingDetail: VideoDetail = {
   ],
   keyframes: [{ time: 3.2, path: "keyframes/frame_000003253.jpg", url: "/api/videos/team-meeting/keyframes/frame_000003253.jpg" }],
   speakers: [
-    { speaker: "SPEAKER_00", seconds: 15, turns: 1, share: 0.54, first_seen: 0 },
-    { speaker: "SPEAKER_01", seconds: 13, turns: 1, share: 0.46, first_seen: 16 },
+    { label: "SPEAKER_00", speaker: "SPEAKER_00", name: null, seconds: 15, turns: 1, share: 0.54, first_seen: 0 },
+    { label: "SPEAKER_01", speaker: "SPEAKER_01", name: null, seconds: 13, turns: 1, share: 0.46, first_seen: 16 },
   ],
   timings: { total: 106 },
 };
@@ -65,4 +65,18 @@ export const day: DayDetail = {
   date: "2026-11-04",
   markdown: "# Daily Summary: 2026-11-04",
   videos: [{ ...doneVideo, summary: meetingDetail.summary! }],
+};
+
+export const answer: AnswerResult = {
+  question: "What did we discuss about the frontend last week?",
+  answer: "The navigation bar breaks below 400 pixels because of a hard-coded logo width.",
+  found: true,
+  date_from: "2026-11-02",
+  date_to: "2026-11-08",
+  time_phrase: "last week",
+  citations: [{
+    video_id: "team-meeting", title: "Frontend Weekly Sync", date: "2026-11-05", kind: "summary",
+    section: "Topic: Navigation bar", start: 6, end: 24, snippet: "The mobile layout breaks below 400 pixels.",
+    thumbnail: null,
+  }],
 };
