@@ -21,6 +21,7 @@ test("asks a question and shows the answer, date range and sources", async () =>
   const source = screen.getByRole("link", { name: /Frontend Weekly Sync/ });
   expect(source).toHaveAttribute("href", "/videos/team-meeting?t=6");
   expect(source).toHaveTextContent("00:06 – 00:24");
+  expect(screen.getByText(/Answered in 3\.40 s/)).toHaveTextContent("search 200 ms, answer 3.20 s");
 });
 
 test("example questions can be clicked", async () => {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from contextlib import nullcontext
 
 from pydantic import BaseModel, Field
 
@@ -67,9 +68,20 @@ def answer_question(
     llm: LLMClient,
     today: dt.date,
     k: int = 6,
+    timings=None,
 ) -> Answer:
-    parsed = parse_query(question, today, llm)
-    hits = store.search(parsed.text, k=k, date_from=parsed.date_from, date_to=parsed.date_to)
+    def step(name: str, label: str, kind: str = "step"):
+        return timings.step(name, label, kind=kind) if timings is not None else nullcontext({"meta": {}})
+
+    with step("parse", "Read time phrase") as span:
+        before = getattr(llm, "last_usage", None)
+        parsed = parse_query(question, today, llm)
+        span["meta"]["llm_used"] = getattr(llm, "last_usage", None) is not before
+        span["meta"]["range"] = f"{parsed.date_from}..{parsed.date_to}" if parsed.date_from else None
+    with step("search", "Search") as span:
+        hits = store.search(parsed.text, k=k, date_from=parsed.date_from, date_to=parsed.date_to,
+                            timings=timings)
+        span["meta"]["hits"] = len(hits)
     base = dict(question=question, date_from=parsed.date_from, date_to=parsed.date_to,
                 time_phrase=parsed.time_phrase)
     if not hits:
@@ -80,10 +92,12 @@ def answer_question(
     excerpts = "\n\n".join(
         f"[{i}] {h.title} | {h.date} | {h.section} | {fmt_ts(h.start)}-{fmt_ts(h.end)}\n{_snippet(h, 2000)}"
         for i, h in enumerate(hits, 1))
-    result = llm.parse(
-        system=ANSWER_SYSTEM,
-        content=[{"type": "text", "text": f"Excerpts:\n\n{excerpts}\n\nQuestion: {question}"}],
-        schema=_LLMAnswer, max_tokens=4000, effort="low")
+    with step("answer", "Write answer (Claude)", "llm") as span:
+        result = llm.parse(
+            system=ANSWER_SYSTEM,
+            content=[{"type": "text", "text": f"Excerpts:\n\n{excerpts}\n\nQuestion: {question}"}],
+            schema=_LLMAnswer, max_tokens=4000, effort="low")
+        span["meta"].update(getattr(llm, "last_usage", None) or {})
 
     cited = [hits[i - 1] for i in dict.fromkeys(result.citations) if 1 <= i <= len(hits)]
     if result.found and not cited:

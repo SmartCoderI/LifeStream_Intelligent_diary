@@ -88,3 +88,30 @@ test("opening with ?t= starts the video at that time", async () => {
   video.dispatchEvent(new Event("loadedmetadata"));
   expect(video.currentTime).toBe(42);
 });
+
+test("timing tab shows the latency breakdown", async () => {
+  renderAt("/videos/team-meeting");
+  await screen.findByText("Key Moments");
+  await userEvent.click(screen.getByRole("tab", { name: /Timing/ }));
+  expect(await screen.findByText("Bottleneck")).toBeInTheDocument();
+  expect(screen.getByText("0.97×")).toBeInTheDocument();
+  expect(screen.getAllByText("Speech models").length).toBeGreaterThan(0);  // breakdown row + legend
+  const rows = screen.getAllByTestId("wf-row");
+  expect(rows[0]).toHaveTextContent("Upload (browser to server)");
+  // sub-step listed right after its parent
+  const labels = rows.map((r) => r.querySelector(".wf-label")!.textContent);
+  expect(labels.indexOf("Load Whisper model (medium.en)")).toBe(labels.indexOf("Transcribe speech (WhisperX medium.en)") + 1);
+});
+
+test("processing video shows live timing with the running step", async () => {
+  const { processingDetail, runningTimeline } = await import("./fixtures");
+  server.use(
+    http.get("*/api/videos/:id", () => HttpResponse.json(processingDetail)),
+    http.get("*/api/videos/:id/timeline", () => HttpResponse.json(runningTimeline)),
+  );
+  renderAt("/videos/travel-vlog");
+  expect(await screen.findByText("Timing so far")).toBeInTheDocument();
+  expect(await screen.findByText("Elapsed so far")).toBeInTheDocument();
+  expect(screen.getByText("so far")).toBeInTheDocument();
+  expect(document.querySelector(".wf-running")).not.toBeNull();
+});

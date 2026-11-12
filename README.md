@@ -27,7 +27,8 @@ Code is organized by the architecture layers in the requirements doc:
 src/lifestream/
 ├── cli.py, config.py       command line, settings (.env)
 ├── schemas.py              data shapes shared by every layer
-├── pipeline.py, timing.py  runs the steps in order, saves each step, records timings
+├── pipeline.py             runs the steps in order, saves each step
+├── timing.py               latency timeline, run history, query log
 ├── processing/             Processing Core (F1-F5), no LLM
 │   ├── media.py            F1 validation, metadata, audio and frame extraction
 │   ├── diarize.py          F2 speaker diarization
@@ -54,8 +55,8 @@ src/lifestream/
 tests/                      same layout as src/lifestream/
 docs/rag-notes.md           RAG background and the choices made here
 web/src/
-├── pages/                  Videos, Video (summary), Daily Journal, Ask
-├── components/             layout/, library/ (upload + list), video/ (video page tabs)
+├── pages/                  Videos, Video (summary), Ask, Latency
+├── components/             layout/, library/ (upload + list), video/ (video page tabs), latency/
 └── lib/                    API client, formatting, polling
 ```
 
@@ -85,10 +86,11 @@ Ctrl+C stops both the backend and the web server.
 - **Videos**: upload a video with its recording date, watch processing progress, retry or delete.
 - **Video page**: player plus Summary / Transcript / Speakers / Scenes tabs; every timestamp
   and key moment jumps the player to that point.
-- **Daily Journal**: one entry per day, combining all videos recorded that day.
 - **Ask / Search**: questions in plain language ("What did we discuss about the frontend
   last week?"); answers cite the video and moment, and each source opens the video there.
-- **Speakers tab**: name speakers; summaries, the journal, transcripts and search use the names.
+- **Speakers tab**: name speakers; summaries, transcripts and search use the names.
+- **Latency** (sidebar) and the video page's **Timing** tab: how long each run took, step by step
+  (see below).
 
 Uploads are saved in `data/uploads/` and processed one at a time in the background.
 Web tests: `cd web && npm test`.
@@ -148,6 +150,23 @@ V1 uses macOS text-to-speech voices, which are easier than real voices. Replace 
 a hand-labeled real recording (RTTM file) for the final M1 check.
 
 Test video slots and their expected answers are in `labels/`.
+
+## Latency monitoring
+
+Every run records a timeline: upload (measured from when the browser starts sending), save,
+queue wait, each processing step with start/end times, model loading as sub-steps, each
+Claude call with model and token counts, and search indexing. Steps that reused saved
+results are marked "reused". Each Ask / Search query records time-phrase parsing, search and
+answer generation.
+
+- **Video page → Timing tab**: the latest run as a timeline (live while processing).
+- **Latency page**: run history (including failed runs and deleted videos) with total, upload,
+  queue, processing (× video length), Claude time and the slowest step; click a run for its
+  timeline. Below it, recent queries.
+- Files: `data/out/<video>/timeline.json` (latest run), `data/out/_logs/runs.jsonl` and
+  `data/out/_logs/queries.jsonl` (history, one JSON object per line). `timings.json` keeps the
+  simple step → seconds form.
+- `lifestream ask` prints its timing too.
 
 ## Search and speaker names (Stage 2)
 

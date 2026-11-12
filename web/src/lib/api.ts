@@ -63,6 +63,52 @@ export interface Citation {
 export interface AnswerResult {
   question: string; answer: string; found: boolean; citations: Citation[];
   date_from: string | null; date_to: string | null; time_phrase: string | null;
+  timing?: { total: number; spans: Span[]; breakdown?: BreakdownItem[] };
+}
+
+// ---------- latency ----------
+export type SpanKind = "io" | "step" | "load" | "llm" | "cached" | "running";
+export type Category =
+  "speech" | "llm" | "model_loading" | "media" | "embedding" | "database" | "upload_queue" | "other";
+export interface BreakdownItem {
+  category: Category; label: string; seconds: number; share: number; per_video_minute?: number | null;
+}
+export interface Span {
+  name: string; label: string; kind: SpanKind; parent: string | null; category?: Category;
+  start: number; end: number; duration: number;  // epoch seconds; duration in seconds
+  meta: Record<string, unknown>; running?: boolean;
+}
+export interface RunStats {
+  total: number | null; upload: number | null; queue: number | null; processing: number;
+  llm_seconds: number; input_tokens: number; output_tokens: number;
+  slowest: { label: string; duration: number } | null; cached_steps: string[]; speed: number | null;
+  breakdown: BreakdownItem[]; bottleneck: BreakdownItem | null; config: RunConfig | null;
+}
+export interface RunConfig {
+  device?: string; whisper_model?: string; compute_type?: string; diarization_device?: string;
+  llm_model?: string | null; embed_model?: string;
+}
+export interface LatencySummary {
+  runs: number; runs_skipped: number; config: RunConfig | null;
+  speed_median: number | null; total_median: number | null;
+  breakdown: BreakdownItem[]; bottleneck: BreakdownItem | null; llm_share: number;
+  queries: {
+    count: number; p50: number | null; p95: number | null;
+    llm_p50: number | null; database_p50: number | null; embedding_p50: number | null;
+    breakdown: BreakdownItem[];
+  };
+}
+export interface Timeline {
+  video_id: string; status: "running" | "queued" | "done" | "failed"; error: string | null;
+  started_at: number; finished_at: number | null; total: number; video_duration: number | null;
+  spans: Span[]; stats: RunStats | null; source?: string; now?: number;
+}
+export interface RunRecord extends Timeline {
+  run_id: string; title: string; deleted: boolean; file?: string; stats: RunStats;
+}
+export interface QueryRecord {
+  at: number; question: string; status: "done" | "failed"; error: string | null;
+  found: boolean | null; citations: number; total: number; spans: Span[]; stats: RunStats;
 }
 export interface SearchStatus { available: boolean; videos: number; chunks: number; error: string | null }
 
@@ -74,8 +120,6 @@ export interface VideoDetail extends VideoItem {
   timings: Record<string, number> | null;
 }
 
-export interface DayItem { date: string; video_count: number }
-export interface DayDetail { date: string; videos: (VideoItem & { summary: VideoSummary })[]; markdown: string | null }
 
 async function get<T>(url: string): Promise<T> {
   const res = await fetch(url);
@@ -98,10 +142,12 @@ async function send<T>(method: string, url: string, body: unknown): Promise<T> {
 export const api = {
   listVideos: () => get<VideoItem[]>("/api/videos"),
   getVideo: (id: string) => get<VideoDetail>(`/api/videos/${id}`),
-  listDays: () => get<DayItem[]>("/api/days"),
-  getDay: (date: string) => get<DayDetail>(`/api/days/${date}`),
   mediaUrl: (id: string) => `/api/videos/${id}/media`,
   searchStatus: () => get<SearchStatus>("/api/search/status"),
+  getTimeline: (id: string) => get<Timeline>(`/api/videos/${id}/timeline`),
+  latencyRuns: (limit = 50) => get<RunRecord[]>(`/api/latency/runs?limit=${limit}`),
+  latencyQueries: (limit = 50) => get<QueryRecord[]>(`/api/latency/queries?limit=${limit}`),
+  latencySummary: (limit = 20) => get<LatencySummary>(`/api/latency/summary?limit=${limit}`),
 
   ask: (question: string) => send<AnswerResult>("POST", "/api/query", { question }),
 
@@ -131,6 +177,7 @@ export const api = {
       const form = new FormData();
       form.append("file", file);
       form.append("date", date);
+      form.append("client_started_at", String(Date.now()));  // upload span of the latency timeline
       const xhr = new XMLHttpRequest();
       xhr.open("POST", "/api/videos");
       xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);

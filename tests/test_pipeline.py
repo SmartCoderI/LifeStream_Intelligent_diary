@@ -62,3 +62,43 @@ def test_no_llm_stops_after_script(format_samples, tmp_path):
 
 def test_video_id():
     assert video_id_for("/x/Under the Hood: AI Economy.MP4") == "under-the-hood-ai-economy"
+
+
+def test_timeline_has_every_step_with_llm_details(format_samples, tmp_path):
+    llm = FakeLLM("meeting")
+    llm.last_usage = {"model": "claude-test", "input_tokens": 1200, "output_tokens": 300}
+    folder = run(format_samples["mp4"], tmp_path, llm)
+    tl = json.loads((folder / "timeline.json").read_text())
+    assert tl["status"] == "done" and tl["video_duration"] > 0 and tl["source"] == "cli"
+    names = [s["name"] for s in tl["spans"]]
+    for name in ["probe", "extract_audio", "transcribe", "diarize", "visual", "merge_and_sync",
+                 "classify", "summarize", "render", "index"]:
+        assert name in names, name
+    classify = next(s for s in tl["spans"] if s["name"] == "classify")
+    assert classify["kind"] == "llm" and classify["meta"]["input_tokens"] == 1200
+    assert classify["label"] == "Classify meeting / vlog (Claude)"
+    assert all(s["end"] >= s["start"] for s in tl["spans"])
+    runs = (tmp_path / "_logs" / "runs.jsonl").read_text().splitlines()
+    assert len(runs) == 1 and json.loads(runs[0])["video_id"] == folder.name
+
+
+def test_rerun_marks_reused_steps(format_samples, tmp_path):
+    run(format_samples["mp4"], tmp_path, FakeLLM())
+    folder = run(format_samples["mp4"], tmp_path, FakeLLM())
+    spans = {s["name"]: s for s in json.loads((folder / "timeline.json").read_text())["spans"]}
+    for name in ["extract_audio", "transcribe", "diarize", "visual"]:
+        assert spans[name]["kind"] == "cached" and spans[name]["duration"] == 0
+    assert len((tmp_path / "_logs" / "runs.jsonl").read_text().splitlines()) == 2  # history kept
+
+
+def test_failed_run_is_logged(format_samples, tmp_path):
+    def broken(wav, settings, **kw):
+        raise RuntimeError("model crashed")
+    import pytest
+    with pytest.raises(RuntimeError):
+        process_video(format_samples["mp4"], "2026-11-03", tmp_path, Settings(), llm=FakeLLM(),
+                      components=Components(transcribe=broken, diarize=fake_diarize, visual=fake_visual,
+                                            index=fake_index), parallel=False, log=lambda m: None)
+    record = json.loads((tmp_path / "_logs" / "runs.jsonl").read_text())
+    assert (record["status"], record["error"]) == ("failed", "model crashed")
+    assert [s["name"] for s in record["spans"]][:2] == ["probe", "extract_audio"]

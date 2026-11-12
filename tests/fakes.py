@@ -39,7 +39,7 @@ class FakeLLM:
         )
 
 
-def fake_transcribe(wav, settings):
+def fake_transcribe(wav, settings, **kwargs):
     return [Word(start=0.0, end=0.5, text="hello"), Word(start=0.6, end=1.0, text="there"),
             Word(start=1.5, end=2.0, text="hi"), Word(start=2.1, end=2.6, text="back")]
 

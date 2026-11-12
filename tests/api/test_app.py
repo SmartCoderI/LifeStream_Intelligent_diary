@@ -166,7 +166,7 @@ def stage2_client(tmp_path, answer_fn=None, index_fn=None, unindex_fn=None):
     process = partial(process_video, llm=FakeLLM("meeting"), components=FAKES, parallel=False)
     app = create_app(out_root=tmp_path / "out", uploads_dir=tmp_path / "uploads", settings=Settings(),
                      process_fn=process, web_dist=None,
-                     answer_fn=answer_fn or (lambda q: {"question": q, "answer": "a", "found": True,
+                     answer_fn=answer_fn or (lambda q, t: {"question": q, "answer": "a", "found": True,
                                                         "citations": [], "date_from": None, "date_to": None,
                                                         "time_phrase": None}),
                      index_fn=index_fn or fake_index, unindex_fn=unindex_fn or (lambda v, s: None))
@@ -174,7 +174,7 @@ def stage2_client(tmp_path, answer_fn=None, index_fn=None, unindex_fn=None):
 
 
 def test_query_returns_answer_with_thumbnails(tmp_path, format_samples):
-    def answer(q):
+    def answer(q, timings):
         return {"question": q, "answer": "Fix the logo.", "found": True, "date_from": "2026-11-02",
                 "date_to": "2026-11-08", "time_phrase": "last week",
                 "citations": [{"video_id": "sample", "title": "Frontend sync", "date": "2026-11-04",
@@ -194,7 +194,7 @@ def test_query_returns_answer_with_thumbnails(tmp_path, format_samples):
     (LLMError("ANTHROPIC_API_KEY is missing"), 502),
 ])
 def test_query_errors(tmp_path, error, code):
-    def fail(q):
+    def fail(q, timings):
         raise error
     with stage2_client(tmp_path, answer_fn=fail) as client:
         r = client.post("/api/query", json={"question": "hi"})
@@ -263,3 +263,108 @@ def test_delete_also_removes_from_search_and_registry(tmp_path, format_samples):
         assert removed == [vid]
         from lifestream.memory.registry import SpeakerRegistry
         assert SpeakerRegistry(Settings().speakers_file).names_for(vid) == {}
+
+
+# ---------------- latency ----------------
+def test_timeline_includes_upload_queue_and_steps(tmp_path, format_samples):
+    with stage2_client(tmp_path) as client:
+        started_ms = (time.time() - 1.5) * 1000  # browser started sending 1.5 s ago
+        with open(format_samples["mp4"], "rb") as f:
+            vid = client.post("/api/videos", data={"date": "2026-11-04", "client_started_at": str(started_ms)},
+                              files={"file": ("clip.mp4", f, "video/mp4")}).json()["video_id"]
+        wait_done(client, vid)
+        tl = client.get(f"/api/videos/{vid}/timeline").json()
+        names = [s["name"] for s in tl["spans"]]
+        assert names[:3] == ["upload", "save_upload", "queue"]
+        upload = tl["spans"][0]
+        assert upload["kind"] == "io" and 1.4 < upload["duration"] < 5
+        assert {"probe", "transcribe", "classify", "summarize", "index"} <= set(names)
+        assert tl["status"] == "done" and tl["source"] == "dashboard"
+        assert tl["stats"]["upload"] == upload["duration"] and tl["stats"]["processing"] > 0
+        assert tl["total"] >= upload["duration"]
+
+
+def test_timeline_while_queued_and_processing(tmp_path, format_samples):
+    import threading
+    gate = threading.Event()
+
+    def slow(*args, on_step=None, **kwargs):
+        on_step("transcribing")
+        gate.wait(5)
+        return process_video(*args, llm=FakeLLM(), components=FAKES, parallel=False, on_step=on_step, **kwargs)
+
+    with stage2_client(tmp_path) as client:
+        client.app.state.jobs.process_fn = slow
+        vid = upload(client, format_samples["mp4"]).json()["video_id"]
+        for _ in range(50):
+            if client.get(f"/api/videos/{vid}/status").json()["step"] == "transcribing":
+                break
+            time.sleep(0.05)
+        tl = client.get(f"/api/videos/{vid}/timeline").json()
+        running = [s for s in tl["spans"] if s.get("running")]
+        assert running and running[0]["label"] == "Transcribing speech"
+        gate.set()
+        wait_done(client, vid)
+        assert not [s for s in client.get(f"/api/videos/{vid}/timeline").json()["spans"] if s.get("running")]
+
+
+def test_timeline_missing_for_old_videos(tmp_path):
+    (tmp_path / "out" / "old").mkdir(parents=True)
+    (tmp_path / "out" / "old" / "metadata.json").write_text('{"duration": 5}')
+    (tmp_path / "out" / "old" / "summary.json").write_text("{}")
+    with stage2_client(tmp_path) as client:
+        r = client.get("/api/videos/old/timeline")
+        assert r.status_code == 404 and "before latency tracking" in r.json()["detail"]
+
+
+def test_run_history_and_query_log(tmp_path, format_samples):
+    def answer(q, timings):
+        with timings.step("search", "Search"):
+            pass
+        with timings.step("answer", "Write answer (Claude)", kind="llm") as span:
+            span["meta"]["input_tokens"] = 500
+        return {"question": q, "answer": "a", "found": True, "citations": [], "date_from": None,
+                "date_to": None, "time_phrase": None}
+    with stage2_client(tmp_path, answer_fn=answer) as client:
+        vid = upload(client, format_samples["mp4"]).json()["video_id"]
+        wait_done(client, vid)
+        runs = client.get("/api/latency/runs").json()
+        assert runs[0]["video_id"] == vid and runs[0]["status"] == "done"
+        assert runs[0]["title"] == "Frontend sync" and runs[0]["stats"]["processing"] > 0
+
+        body = client.post("/api/query", json={"question": "what happened?"}).json()
+        assert [s["name"] for s in body["timing"]["spans"]] == ["search", "answer"]
+        queries = client.get("/api/latency/queries").json()
+        assert queries[0]["question"] == "what happened?" and queries[0]["status"] == "done"
+        assert queries[0]["stats"]["input_tokens"] == 500
+
+        client.delete(f"/api/videos/{vid}")
+        assert client.get("/api/latency/runs").json()[0]["deleted"] is True  # history kept
+
+
+def test_failed_query_is_logged(tmp_path):
+    def fail(q, timings):
+        raise MemoryUnavailable("Can't reach the search database.")
+    with stage2_client(tmp_path, answer_fn=fail) as client:
+        assert client.post("/api/query", json={"question": "hi"}).status_code == 503
+        q = client.get("/api/latency/queries").json()[0]
+        assert q["status"] == "failed" and "search database" in q["error"]
+
+
+def test_latency_summary(tmp_path, format_samples):
+    def answer(q, timings):
+        with timings.step("answer", "Write answer (Claude)", kind="llm"):
+            pass
+        return {"question": q, "answer": "a", "found": True, "citations": [], "date_from": None,
+                "date_to": None, "time_phrase": None}
+    with stage2_client(tmp_path, answer_fn=answer) as client:
+        vid = upload(client, format_samples["mp4"]).json()["video_id"]
+        wait_done(client, vid)
+        client.post("/api/query", json={"question": "q"})
+        summary = client.get("/api/latency/summary").json()
+        assert summary["runs"] == 1 and summary["speed_median"] > 0
+        assert abs(sum(i["share"] for i in summary["breakdown"]) - 1) < 0.01
+        assert summary["queries"]["count"] == 1 and summary["queries"]["p50"] is not None
+        assert summary["config"]["whisper_model"]
+        run = client.get("/api/latency/runs").json()[0]
+        assert run["stats"]["bottleneck"] is not None and run["stats"]["breakdown"]

@@ -2,7 +2,7 @@ import { CalendarRange, Film, Loader2, MessageSquareText, Play, Search, SendHori
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type AnswerResult, type SearchStatus } from "../lib/api";
-import { clock, longDate } from "../lib/format";
+import { clock, duration, longDate } from "../lib/format";
 
 const EXAMPLES = [
   "What did we discuss about the frontend last week?",
@@ -47,7 +47,7 @@ export default function AskPage() {
     <>
       <header className="page-header">
         <h1>Ask Your Videos</h1>
-        <p>Search across your videos, summaries and daily journal in plain language. Time phrases like "last week" narrow the search.</p>
+        <p>Search across your videos and their summaries in plain language. Time phrases like "last week" narrow the search.</p>
       </header>
 
       {status && !status.available && (
@@ -85,6 +85,13 @@ export default function AskPage() {
           <h2><Sparkles size={20} /> Answer</h2>
           {range && <div className="muted range"><CalendarRange size={14} /> Searched {range}</div>}
           <p className={`answer${result.found ? "" : " muted"}`}>{result.answer}</p>
+          {result.timing && (
+            <p className="muted timing-line">
+              Answered in {duration(result.timing.total)}
+              {" ("}{result.timing.spans.map((s) => `${s.name} ${duration(s.duration)}`).join(", ")}{") · "}
+              <Link to="/latency">details</Link>
+            </p>
+          )}
 
           {result.citations.length > 0 && (
             <>

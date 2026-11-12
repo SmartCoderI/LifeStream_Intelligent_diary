@@ -14,9 +14,8 @@ from .registry import SpeakerRegistry
 from .store import MemoryStore
 
 
-def open_store(settings: Settings, schema: str = "public") -> MemoryStore:
-    """Connect to the search database. Checks the connection before loading the
-    embedding model (slow), so a stopped database fails fast."""
+def check_database(settings: Settings) -> None:
+    """Raise MemoryUnavailable quickly if the search database isn't reachable."""
     import psycopg
 
     from .store import MemoryUnavailable
@@ -26,6 +25,12 @@ def open_store(settings: Settings, schema: str = "public") -> MemoryStore:
     except psycopg.OperationalError as e:
         raise MemoryUnavailable(
             "Can't reach the search database. Start it with `docker compose up -d db`.") from e
+
+
+def open_store(settings: Settings, schema: str = "public") -> MemoryStore:
+    """Connect to the search database. Checks the connection before loading the
+    embedding model (slow), so a stopped database fails fast."""
+    check_database(settings)
     return MemoryStore(settings.database_url, get_embedder(settings.embed_model), schema)
 
 
@@ -39,7 +44,8 @@ def load_output(out_dir: Path) -> tuple[VideoSummary, list[ScriptSegment]] | Non
     return summary, script
 
 
-def index_output(out_dir: Path, settings: Settings, store: MemoryStore | None = None) -> int | None:
+def index_output(out_dir: Path, settings: Settings, store: MemoryStore | None = None,
+                 timings=None) -> int | None:
     """Index one finished video (with current speaker names). Returns the chunk count."""
     loaded = load_output(Path(out_dir))
     if loaded is None:
@@ -49,7 +55,7 @@ def index_output(out_dir: Path, settings: Settings, store: MemoryStore | None = 
     own = store is None
     store = store or open_store(settings)
     try:
-        return store.index_video(summary, script, names)
+        return store.index_video(summary, script, names, timings=timings)
     finally:
         if own:
             store.close()

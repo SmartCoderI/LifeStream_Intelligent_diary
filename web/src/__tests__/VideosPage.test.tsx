@@ -99,6 +99,7 @@ test("uploads a video with its date", async () => {
   expect(sent.url).toBe("/api/videos");
   expect(sent.form!.get("date")).toBe("2026-11-01");
   expect((sent.form!.get("file") as File).name).toBe("trip.mp4");
+  expect(Number(sent.form!.get("client_started_at"))).toBeGreaterThan(Date.now() - 60_000);
   expect(screen.queryByText("trip.mp4")).not.toBeInTheDocument();
 });
 
@@ -108,4 +109,10 @@ test("upload error is shown", async () => {
   await userEvent.upload(screen.getByLabelText("Video file"), new File(["data"], "big.mp4", { type: "video/mp4" }));
   await userEvent.click(screen.getByRole("button", { name: "Upload and process" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("larger than 1024 MB");
+});
+
+test("the daily journal page is gone and old links go to the library", async () => {
+  renderAt("/journal/2026-11-04");
+  expect(await screen.findByRole("heading", { name: "Videos" })).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: /Daily Journal/ })).not.toBeInTheDocument();
 });

@@ -15,6 +15,9 @@
     GET    /api/days/{date}             daily summary
     POST   /api/query                   query_memory: answer a question with citations (F9)
     GET    /api/search/status           is the search database reachable, what's indexed
+    GET    /api/videos/{id}/timeline    latency breakdown of the latest run (live while processing)
+    GET    /api/latency/runs            run history with per-step timings
+    GET    /api/latency/queries         recent Ask/Search queries with timings
 
 Speaker names from the registry are applied to everything returned.
 """
@@ -39,7 +42,8 @@ from ..config import Settings, get_settings
 from ..memory.registry import RegistryError, SpeakerRegistry, apply_names
 from ..memory.store import MemoryConfigError, MemoryUnavailable
 from ..processing.media import SUPPORTED_EXTENSIONS
-from .jobs import STEP_LABELS, Job, JobQueue, ProcessFn, read_status, write_status
+from ..timing import STEP_CATEGORIES, Timings, aggregate, append_log, category_of, read_log, run_stats
+from .jobs import STEP_LABELS, Job, JobQueue, ProcessFn, pre_processing_spans, read_status, write_status
 
 VIDEO_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 KEYFRAME = re.compile(r"^frame_\d+\.jpg$")
@@ -54,20 +58,30 @@ class SpeakersIn(BaseModel):
     names: dict[str, str | None]
 
 
-AnswerFn = Callable[[str], dict]
+AnswerFn = Callable[[str, Timings], dict]
 IndexFn = Callable[[Path, Settings], "int | None"]
 UnindexFn = Callable[[str, Settings], None]
 
 
 def _default_answer(settings: Settings) -> AnswerFn:
-    def answer(question: str) -> dict:
+    def answer(question: str, timings: Timings) -> dict:
         from ..intelligence.llm import AnthropicLLM
         from ..memory.answer import answer_question
         from ..memory.indexer import open_store
 
-        with open_store(settings) as store:
+        from ..memory.embeddings import get_embedder, is_loaded
+
+        cold = not is_loaded(settings.embed_model)
+        with timings.step("connect.load_model", f"Load embedding model ({'cold' if cold else 'warm'})",
+                          kind="load") as span:
+            get_embedder(settings.embed_model)
+            span["meta"]["cold"] = cold
+        with timings.step("connect.db", "Connect to database"):
+            store = open_store(settings)
+        timings.meta["config"] = {"llm_model": settings.llm_model, "embed_model": settings.embed_model}
+        with store:
             result = answer_question(question, store, AnthropicLLM(settings.llm_model),
-                                     dt.date.today(), settings.search_k)
+                                     dt.date.today(), settings.search_k, timings=timings)
         return result.model_dump(mode="json")
     return answer
 
@@ -81,6 +95,13 @@ def _default_unindex(video_id: str, settings: Settings) -> None:
     from ..memory.indexer import open_store
     with open_store(settings) as store:
         store.delete_video(video_id)
+
+
+def _categorize(spans: list[dict]) -> list[dict]:
+    """Attach each span's category so the dashboard colours it the same way the analysis counts it."""
+    for span in spans:
+        span["category"] = category_of(span)
+    return spans
 
 
 def _read_json(path: Path):
@@ -200,7 +221,11 @@ def create_app(
         return sorted((item(f) for f in all_folders()), key=lambda v: -v["uploaded_at"])
 
     @app.post("/api/videos", status_code=202)
-    def upload_video(file: UploadFile = File(...), date: str = Form(...)):
+    def upload_video(file: UploadFile = File(...), date: str = Form(...),
+                     client_started_at: float | None = Form(None)):
+        """`client_started_at`: when the browser started sending (epoch ms), for the
+        upload span of the latency timeline. The body is fully received before this runs."""
+        received_at = time.time()
         try:
             dt.date.fromisoformat(date)
         except ValueError:
@@ -230,7 +255,11 @@ def create_app(
             dest.unlink(missing_ok=True)
             raise HTTPException(400, "The file is empty")
 
-        write_status(out_root / video_id, original_name=name, size_bytes=size, created_at=time.time())
+        upload_started = client_started_at / 1000 if client_started_at else None
+        if upload_started is not None and not (received_at - 6 * 3600 < upload_started <= received_at):
+            upload_started = None  # ignore clocks that clearly disagree
+        write_status(out_root / video_id, original_name=name, size_bytes=size, created_at=time.time(),
+                     upload_started_at=upload_started, received_at=received_at, saved_at=time.time())
         jobs.submit(Job(video_id, dest.resolve(), date))
         return item(out_root / video_id)
 
@@ -292,6 +321,51 @@ def create_app(
             raise HTTPException(409, "The original video file is missing; upload it again")
         jobs.submit(Job(video_id, path.resolve(), date))
         return item(folder)
+
+    @app.get("/api/videos/{video_id}/timeline")
+    def get_timeline(video_id: str):
+        """Latest run's latency breakdown. While a video is queued or processing, the
+        step in progress is added as a 'running' span that ends now."""
+        folder = folder_for(video_id)
+        status = read_status(folder)
+        state = status.get("status")
+        now = time.time()
+        if state == "queued":
+            timeline = {"video_id": video_id, "status": "queued", "error": None, "finished_at": None,
+                        "spans": pre_processing_spans(status, now)}
+            for span in timeline["spans"]:
+                if span["name"] == "queue":
+                    span["running"] = True
+        else:
+            timeline = _read_json(folder / "timeline.json")
+            tl_file = folder / "timeline.json"
+            stale = (state == "processing" and status.get("started_at") and
+                     (timeline is None or tl_file.stat().st_mtime < status["started_at"]))
+            if stale:  # processing just started; this run's timeline isn't written yet
+                timeline = {"video_id": video_id, "status": "running", "error": None, "finished_at": None,
+                            "spans": pre_processing_spans(status, status["started_at"])}
+            if timeline is None:
+                raise HTTPException(404, "No timing recorded for this video (it was processed before "
+                                         "latency tracking, or by an older version). Retry it to record one.")
+            if state == "processing" and timeline.get("status") == "running" and status.get("step_started_at"):
+                step = status.get("step") or ""
+                timeline["spans"].append({
+                    "name": f"running.{step}", "label": STEP_LABELS.get(step, step), "kind": "running",
+                    "category": STEP_CATEGORIES.get(step, "other"),
+                    "parent": None, "start": status["step_started_at"], "end": now,
+                    "duration": round(now - status["step_started_at"], 3), "meta": {}, "running": True})
+        spans = timeline["spans"]
+        if spans:
+            start = min(s["start"] for s in spans)
+            end = timeline.get("finished_at") or max([s["end"] for s in spans] + [now if state in
+                                                                                  ("queued", "processing") else 0])
+            timeline["started_at"], timeline["total"] = start, round(end - start, 3)
+        meta = _read_json(folder / "metadata.json") or {}
+        timeline.setdefault("video_duration", meta.get("duration"))
+        _categorize(spans)
+        timeline["now"] = now
+        timeline["stats"] = run_stats(timeline) if spans else None
+        return timeline
 
     @app.get("/api/videos/{video_id}/speakers")
     def get_speakers(video_id: str):
@@ -375,6 +449,16 @@ def create_app(
                 "markdown": md.read_text() if md.exists() else None}
 
     # ---------- search (Stage 2) ----------
+    queries_log = out_root / "_logs" / "queries.jsonl"
+
+    def log_query(question: str, timings: Timings, status: str, error: str | None, result: dict | None):
+        tl = timings.finish(status, error)
+        append_log(queries_log, {
+            "at": tl["started_at"], "question": question, "status": status, "error": error,
+            "found": (result or {}).get("found"), "citations": len((result or {}).get("citations", [])),
+            "total": tl["total"], "spans": tl["spans"], "stats": run_stats(tl)})
+        return tl
+
     @app.post("/api/query")
     def query_memory(body: QueryIn):
         question = body.question.strip()
@@ -383,19 +467,48 @@ def create_app(
         if len(question) > 1000:
             raise HTTPException(400, "Question is too long (max 1000 characters)")
         from ..intelligence.llm import LLMError
+        timings = Timings()
         try:
-            result = answer_fn(question)
-        except MemoryUnavailable as e:
-            raise HTTPException(503, str(e))
-        except MemoryConfigError as e:
-            raise HTTPException(409, str(e))
-        except LLMError as e:
-            raise HTTPException(502, str(e))
+            result = answer_fn(question, timings)
+        except (MemoryUnavailable, MemoryConfigError, LLMError) as e:
+            log_query(question, timings, "failed", str(e), None)
+            code = 503 if isinstance(e, MemoryUnavailable) else 409 if isinstance(e, MemoryConfigError) else 502
+            raise HTTPException(code, str(e))
+        tl = log_query(question, timings, "done", None, result)
+        result["timing"] = {"total": tl["total"], "spans": _categorize(tl["spans"]),
+                            "breakdown": run_stats(tl)["breakdown"]}
         # add what the dashboard needs to show each source
         for c in result.get("citations", []):
             folder = out_root / c["video_id"]
             c["thumbnail"] = item(folder)["thumbnail"] if folder.exists() else None
         return result
+
+    @app.get("/api/latency/runs")
+    def latency_runs(limit: int = 50):
+        """Run history (newest first), each with its timeline and headline stats."""
+        runs = []
+        for record in read_log(out_root / "_logs" / "runs.jsonl", max(1, min(limit, 500))):
+            vid = record.get("video_id", "")
+            folder = out_root / vid
+            exists = VIDEO_ID.match(vid) and folder.exists()
+            _categorize(record.get("spans", []))
+            runs.append({**record, "title": item(folder)["title"] if exists else record.get("file", vid),
+                         "deleted": not exists, "stats": run_stats(record)})
+        return runs
+
+    @app.get("/api/latency/summary")
+    def latency_summary(limit: int = 20):
+        """Headline numbers across the last `limit` runs and queries."""
+        n = max(1, min(limit, 500))
+        return aggregate(read_log(out_root / "_logs" / "runs.jsonl", n), read_log(queries_log, 200))
+
+    @app.get("/api/latency/queries")
+    def latency_queries(limit: int = 50):
+        records = read_log(queries_log, max(1, min(limit, 500)))
+        for r in records:
+            _categorize(r.get("spans", []))
+            r["stats"] = run_stats(r)
+        return records
 
     @app.get("/api/search/status")
     def search_status():

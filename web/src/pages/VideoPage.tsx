@@ -1,4 +1,4 @@
-import { ArrowLeft, BookOpen, Check, Clapperboard, FileText, Loader2, Play, Users } from "lucide-react";
+import { ArrowLeft, BookOpen, Check, Clapperboard, FileText, Gauge, Loader2, Play, Users } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, type VideoDetail } from "../lib/api";
@@ -7,15 +7,17 @@ import ScenesTab from "../components/video/ScenesTab";
 import SpeakersTab from "../components/video/SpeakersTab";
 import StatusBadge, { ProgressBar } from "../components/library/StatusBadge";
 import TranscriptTab from "../components/video/TranscriptTab";
+import TimingPanel from "../components/latency/TimingPanel";
 import { clock, parseTimestamp, speakerColors } from "../lib/format";
 import { usePolling } from "../lib/usePolling";
 
-type Tab = "summary" | "transcript" | "speakers" | "scenes";
+type Tab = "summary" | "transcript" | "speakers" | "scenes" | "timing";
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "summary", label: "Summary", icon: <BookOpen size={16} /> },
   { id: "transcript", label: "Transcript", icon: <FileText size={16} /> },
   { id: "speakers", label: "Speakers", icon: <Users size={16} /> },
   { id: "scenes", label: "Scenes", icon: <Clapperboard size={16} /> },
+  { id: "timing", label: "Timing", icon: <Gauge size={16} /> },
 ];
 const STEPS = [
   ["validating", "Checking the file"],
@@ -116,7 +118,15 @@ export default function VideoPage() {
         {!ready && <StatusBadge video={video} />}
       </div>
 
-      {!ready ? <Processing video={video} /> : (
+      {!ready ? (
+        <>
+          <Processing video={video} />
+          <section className="card live-timing">
+            <h3>Timing so far</h3>
+            <TimingPanel videoId={video.video_id} />
+          </section>
+        </>
+      ) : (
         <>
           <div className="tabs" role="tablist">
             {TABS.map((t) => (
@@ -148,6 +158,7 @@ export default function VideoPage() {
               {tab === "transcript" && <TranscriptTab script={video.script} colors={colors} currentTime={time} onSeek={seek} />}
               {tab === "speakers" && <SpeakersTab videoId={video.video_id} speakers={video.speakers} colors={colors} onSaved={refresh} />}
               {tab === "scenes" && <ScenesTab keyframes={video.keyframes} onSeek={seek} />}
+              {tab === "timing" && <TimingPanel videoId={video.video_id} />}
             </div>
           </div>
         </>

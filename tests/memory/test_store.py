@@ -85,3 +85,17 @@ def test_retrieval_accuracy_and_m2_with_real_embeddings(pg_url):
     assert report.m2_passed, report.m2_top
     assert report.recall_at_k >= 0.9
     assert report.mrr >= 0.8
+
+
+def test_index_and_search_time_embedding_and_database_separately(store):
+    from lifestream.timing import Timings
+    summary, script = scenario()[0]
+    t = Timings()
+    with t.step("index", "Add to search"):
+        store.index_video(summary, script, timings=t)
+    with t.step("search", "Search"):
+        store.search("frontend", k=3, timings=t)
+    names = {s["name"]: s for s in t.spans}
+    assert {"index.embed", "index.db", "search.embed", "search.db"} <= set(names)
+    assert names["index.embed"]["parent"] == "index" and names["search.db"]["parent"] == "search"
+    assert names["index.embed"]["meta"]["chunks"] > 0

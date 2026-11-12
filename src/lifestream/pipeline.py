@@ -16,6 +16,7 @@ import json
 import multiprocessing as mp
 import re
 import time
+import uuid
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +30,7 @@ from .config import Settings
 from .intelligence.llm import AnthropicLLM, LLMClient
 from .memory.registry import SpeakerRegistry, apply_names
 from .schemas import Keyframe, Scene, ScriptSegment, SpeakerSegment, VideoSummary, Word
-from .timing import Timings
+from .timing import Timings, append_log
 
 IndexFn = Callable[[Path, Settings], "int | None"]
 WordsFn = Callable[[Path, Settings], list[Word]]
@@ -71,9 +72,14 @@ def _load_list(path: Path, model) -> list:
 
 
 def _timed_visual(fn: VisualFn, **kwargs):
-    start = time.perf_counter()
+    """Runs in the child process; returns wall-clock start/end for the timeline."""
+    start = time.time()
     result = fn(**kwargs)
-    return result, time.perf_counter() - start
+    return result, start, time.time()
+
+
+def runs_log_path(out_root: str | Path) -> Path:
+    return Path(out_root) / "_logs" / "runs.jsonl"
 
 
 def process_video(
@@ -93,27 +99,54 @@ def process_video(
     log: Callable[[str], None] = print,
     video_id: str | None = None,
     on_step: Callable[[str], None] | None = None,
+    extra_spans: list[dict] | None = None,
+    source: str = "cli",
 ) -> Path:
     """Process one video. Returns its output folder.
 
-    `on_step(name)` is called as each step starts (used by the dashboard for progress).
+    `on_step(name)` is called as each step starts (dashboard progress).
+    `extra_spans` are timeline spans measured before processing (upload, queue).
+    The run's timeline is saved to timeline.json and appended to the run history,
+    whether it finishes or fails.
     """
-    components = components or Components()
-    step = on_step or (lambda name: None)
-    timings = Timings()
-    t0 = time.perf_counter()
-
     video = Path(video)
     out_root = Path(out_root)
     vid = video_id or video_id_for(video, out_root)
     out = out_root / vid
     out.mkdir(parents=True, exist_ok=True)
+    timings = Timings(out / "timeline.json", extra_spans,
+                      meta={"video_id": vid, "run_id": uuid.uuid4().hex[:8], "source": source,
+                            "file": video.name})
+    try:
+        _run_steps(video, date, out_root, out, vid, settings, timings, llm=llm,
+                   components=components or Components(), num_speakers=num_speakers,
+                   min_speakers=min_speakers, max_speakers=max_speakers, force=force,
+                   run_llm=run_llm, parallel=parallel, log=log, step=on_step or (lambda name: None))
+    except Exception as e:
+        append_log(runs_log_path(out_root), timings.finish("failed", str(e) or type(e).__name__))
+        raise
+    record = timings.finish("done")
+    append_log(runs_log_path(out_root), record)
+    timings.save(out / "timings.json", total=record["total"])
+    return out
+
+
+def _run_steps(video: Path, date: str, out_root: Path, out: Path, vid: str, settings: Settings,
+               timings: Timings, *, llm, components: Components, num_speakers, min_speakers,
+               max_speakers, force: bool, run_llm: bool, parallel: bool,
+               log: Callable[[str], None], step: Callable[[str], None]) -> None:
     cached: list[str] = []
+    timings.meta["config"] = {
+        "device": settings.device, "whisper_model": settings.whisper_model,
+        "compute_type": settings.compute_type, "diarization_device": settings.diarization_device,
+        "llm_model": settings.llm_model if run_llm else None, "embed_model": settings.embed_model,
+    }
 
     # ---- F1: validate + metadata + audio ----
     step("validating")
-    with timings.step("probe"):
+    with timings.step("probe", "Check file (ffprobe)"):
         info = media.probe(video)
+    timings.meta["video_duration"] = info.duration
     (out / "metadata.json").write_text(json.dumps(
         {"video_id": vid, "date": date, **info.model_dump()}, indent=2))
     log(f"[{vid}] {info.duration / 60:.1f} min, {info.width}x{info.height}, {info.fps:.2f} fps")
@@ -121,9 +154,10 @@ def process_video(
     wav = out / "audio.wav"
     if wav.exists() and not force:
         cached.append("extract_audio")
+        timings.cached("extract_audio", "Extract audio (reused)")
     else:
         step("extracting_audio")
-        with timings.step("extract_audio"):
+        with timings.step("extract_audio", "Extract audio (FFmpeg)"):
             media.extract_audio(video, wav)
 
     # ---- F4 visual branch, started in parallel with the audio branch ----
@@ -139,6 +173,7 @@ def process_video(
     visual_saved = visual_cached
     if visual_cached:
         cached.append("visual_branch")
+        timings.cached("visual", "Scene detection + keyframes (reused)")
     elif parallel:
         # separate process: true parallelism, and keeps OpenCV out of the ASR process
         pool = ProcessPoolExecutor(max_workers=1, mp_context=mp.get_context("spawn"))
@@ -152,24 +187,28 @@ def process_video(
         if words_path.exists() and not force:
             words = _load_list(words_path, Word)
             cached.append("transcribe")
+            timings.cached("transcribe", "Transcribe speech (reused)")
         else:
             step("transcribing")
             log(f"[{vid}] transcribing ({settings.whisper_model}, {settings.device})...")
-            with timings.step("transcribe"):
-                words = components.transcribe(wav, settings)
+            with timings.step("transcribe", f"Transcribe speech (WhisperX {settings.whisper_model})") as span:
+                words = components.transcribe(wav, settings, timings=timings)
+                span["meta"]["words"] = len(words)
             _save_list(words_path, words)
 
         diar_path = out / "diarization.json"
         if diar_path.exists() and not force:
             speaker_segments = _load_list(diar_path, SpeakerSegment)
             cached.append("diarize")
+            timings.cached("diarize", "Speaker diarization (reused)")
         else:
             step("diarizing")
             log(f"[{vid}] diarizing...")
-            with timings.step("diarize"):
+            with timings.step("diarize", "Speaker diarization (pyannote)") as span:
                 speaker_segments = components.diarize(
                     wav, settings, num_speakers=num_speakers,
-                    min_speakers=min_speakers, max_speakers=max_speakers)
+                    min_speakers=min_speakers, max_speakers=max_speakers, timings=timings)
+                span["meta"]["speakers"] = len({s.speaker for s in speaker_segments})
             _save_list(diar_path, speaker_segments)
         timings.record("audio_branch", time.perf_counter() - audio_start)
 
@@ -180,10 +219,15 @@ def process_video(
             keyframes = _load_list(frames_path, Keyframe)
         else:
             if visual_future is not None:
-                (scene_list, keyframes), visual_s = visual_future.result()
+                (scene_list, keyframes), v_start, v_end = visual_future.result()
+                label = "Scene detection + keyframes (parallel)"
             else:
-                (scene_list, keyframes), visual_s = _timed_visual(components.visual, **visual_kwargs)
-            timings.record("visual_branch", visual_s)
+                (scene_list, keyframes), v_start, v_end = _timed_visual(components.visual, **visual_kwargs)
+                label = "Scene detection + keyframes"
+            timings.add("visual", label, v_start, v_end,
+                        meta={"scenes": len(scene_list), "keyframes": len(keyframes),
+                              "parallel": visual_future is not None})
+            timings.record("visual_branch", v_end - v_start)
             _save_list(scenes_path, scene_list)
             _save_list(frames_path, keyframes)
             visual_saved = True
@@ -192,7 +236,7 @@ def process_video(
             pool.shutdown(wait=True)
             # if the audio branch failed, still keep the finished visual results
             if not visual_saved and visual_future.done() and visual_future.exception() is None:
-                (v_scenes, v_frames), _ = visual_future.result()
+                (v_scenes, v_frames), _, _ = visual_future.result()
                 _save_list(scenes_path, v_scenes)
                 _save_list(frames_path, v_frames)
     log(f"[{vid}] {len(words)} words, {len({s.speaker for s in speaker_segments})} speakers, "
@@ -200,9 +244,10 @@ def process_video(
 
     # ---- F3 merge + F5 frame sync -> script ----
     step("merging")
-    with timings.step("merge_and_sync"):
+    with timings.step("merge_and_sync", "Build script (merge words, speakers, frames)") as span:
         turns = merge.build_turns(words, speaker_segments)
         segments = sync.attach_frames(turns, keyframes)
+        span["meta"]["turns"] = len(segments)
     _save_list(out / "script.json", segments)
     (out / "script.md").write_text(summarize.render_script(segments))
 
@@ -211,42 +256,55 @@ def process_video(
         llm = llm or AnthropicLLM(settings.llm_model)
         step("classifying")
         log(f"[{vid}] classifying...")
-        with timings.step("classify"):
+        with timings.step("classify", "Classify meeting / vlog (Claude)", kind="llm") as span:
             classification = summarize.classify(
                 llm, segments, keyframes, out, info.duration, window_s=settings.classify_window_s)
+            span["meta"].update(getattr(llm, "last_usage", None) or {}, result=classification.type)
         step("summarizing")
         log(f"[{vid}] type: {classification.type} ({classification.confidence}); summarizing...")
-        with timings.step("summarize"):
+        with timings.step("summarize", f"Write {classification.type} summary (Claude)", kind="llm") as span:
             body = summarize.summarize(llm, classification.type, segments, keyframes, out,
                                        info.duration, effort=settings.llm_effort)
+            span["meta"].update(getattr(llm, "last_usage", None) or {})
         result = VideoSummary(
             video_id=vid, date=date, duration=info.duration, classification=classification,
             vlog=body if classification.type == "vlog" else None,
             meeting=body if classification.type == "meeting" else None,
         )
         (out / "summary.json").write_text(result.model_dump_json(indent=2))
-        render_outputs(out_root, vid, settings)
+        with timings.step("render", "Render Markdown + daily journal"):
+            render_outputs(out_root, vid, settings)
 
         # ---- Stage 2: add to the search index ----
         step("indexing")
         _index(out, settings, components, timings, log, vid)
 
-    timings.save(out / "timings.json", total=time.perf_counter() - t0)
     if cached:
         log(f"[{vid}] reused saved results for: {', '.join(cached)} (use --force to redo)")
-    return out
 
 
 def _index(out: Path, settings: Settings, components: Components, timings: Timings,
            log: Callable[[str], None], vid: str) -> None:
     from .memory.store import MemoryUnavailable
 
-    index_fn = components.index
-    if index_fn is None:
-        from .memory.indexer import index_output as index_fn
     try:
-        with timings.step("index"):
-            n = index_fn(out, settings)
+        with timings.step("index", "Add to search") as span:
+            if components.index is None:
+                from .memory.embeddings import get_embedder, is_loaded
+                from .memory.indexer import check_database, index_output
+
+                with timings.step("index.connect.db", "Check database connection", parent="index"):
+                    check_database(settings)
+                # first use in this process loads the model (cold); later videos reuse it (warm)
+                cold = not is_loaded(settings.embed_model)
+                with timings.step("index.load_model", f"Load embedding model ({'cold' if cold else 'warm'})",
+                                  kind="load", parent="index") as load:
+                    get_embedder(settings.embed_model)
+                    load["meta"]["cold"] = cold
+                n = index_output(out, settings, timings=timings)
+            else:
+                n = components.index(out, settings)
+            span["meta"]["chunks"] = n
         if n is not None:
             log(f"[{vid}] indexed {n} chunks for search")
     except MemoryUnavailable as e:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+from contextlib import nullcontext
 from pathlib import Path
 
 from ..config import Settings
@@ -42,26 +43,40 @@ def words_from_aligned(aligned: dict) -> list[Word]:
     return words
 
 
-def transcribe(wav: str | Path, settings: Settings) -> list[Word]:
-    """Transcribe English speech and align each word to the audio."""
+def transcribe(wav: str | Path, settings: Settings, timings=None) -> list[Word]:
+    """Transcribe English speech and align each word to the audio.
+    With `timings`, model loading and each stage are recorded as sub-steps."""
     import whisperx
+
+    def sub(name: str, label: str, kind: str = "step"):
+        if timings is None:
+            return nullcontext({"meta": {}})
+        return timings.step(f"transcribe.{name}", label, kind=kind, parent="transcribe")
 
     audio = whisperx.load_audio(str(wav))
 
-    model = whisperx.load_model(
-        settings.whisper_model, settings.device,
-        compute_type=settings.compute_type, language=settings.language,
-    )
-    result = model.transcribe(audio, batch_size=settings.asr_batch_size, language=settings.language)
+    with sub("load_model", f"Load Whisper model ({settings.whisper_model})", "load") as span:
+        span["meta"]["cold"] = True  # freed after each video to save memory
+        model = whisperx.load_model(
+            settings.whisper_model, settings.device,
+            compute_type=settings.compute_type, language=settings.language,
+        )
+    with sub("asr", "Speech to text") as span:
+        result = model.transcribe(audio, batch_size=settings.asr_batch_size, language=settings.language)
+        span["meta"]["segments"] = len(result.get("segments", []))
     del model
     gc.collect()
 
-    align_model, metadata = whisperx.load_align_model(language_code=settings.language, device=settings.device)
-    aligned = whisperx.align(
-        result["segments"], align_model, metadata, audio, settings.device,
-        return_char_alignments=False,
-    )
+    with sub("load_align_model", "Load alignment model", "load"):
+        align_model, metadata = whisperx.load_align_model(language_code=settings.language, device=settings.device)
+    with sub("align", "Align word timestamps") as span:
+        aligned = whisperx.align(
+            result["segments"], align_model, metadata, audio, settings.device,
+            return_char_alignments=False,
+        )
+        words = words_from_aligned(aligned)
+        span["meta"]["words"] = len(words)
     del align_model
     gc.collect()
 
-    return words_from_aligned(aligned)
+    return words

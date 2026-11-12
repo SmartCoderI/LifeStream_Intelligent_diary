@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..schemas import ScriptSegment, VideoSummary
+from ..timing import sub_step
 from .chunking import Chunk, summary_chunks, transcript_chunks
 from .embeddings import Embedder
 from .registry import apply_names
@@ -146,6 +147,7 @@ class MemoryStore:
         summary: VideoSummary,
         script: list[ScriptSegment],
         names: dict[str, str] | None = None,
+        timings=None,
     ) -> int:
         """(Re)index one video. Speaker names are applied first. Returns the number of chunks."""
         names = names or {}
@@ -156,10 +158,12 @@ class MemoryStore:
 
         chunks: list[Chunk] = summary_chunks(named_summary) + transcript_chunks(
             summary.video_id, summary.date, title, summary.classification.type, named_script)
-        vectors = self.embedder.embed_documents([c.to_embed() for c in chunks])
+        with sub_step(timings, "index.embed", "Embed chunks", parent="index") as span:
+            vectors = self.embedder.embed_documents([c.to_embed() for c in chunks])
+            span["meta"]["chunks"] = len(chunks)
 
         s = self.schema
-        with self.conn.transaction():
+        with sub_step(timings, "index.db", "Write to database", parent="index"), self.conn.transaction():
             self.conn.execute(f"DELETE FROM {s}.videos WHERE id = %s", (summary.video_id,))
             self.conn.execute(
                 f"INSERT INTO {s}.videos (id, date, type, title, duration) VALUES (%s, %s, %s, %s, %s)",
@@ -197,10 +201,12 @@ class MemoryStore:
         k: int = 6,
         date_from: dt.date | None = None,
         date_to: dt.date | None = None,
+        timings=None,
     ) -> list[SearchHit]:
         """Top-k chunks by cosine similarity (summary paragraphs get a small boost),
         optionally limited to a date range (inclusive)."""
-        vec = self.embedder.embed_query(query)
+        with sub_step(timings, "search.embed", "Embed question", parent="search"):
+            vec = self.embedder.embed_query(query)
         s = self.schema
         where, params = [], []
         if date_from:
@@ -216,7 +222,7 @@ class MemoryStore:
             {"WHERE " + " AND ".join(where) if where else ""}
             ORDER BY c.embedding <=> %s
             LIMIT %s"""
-        with self.conn.transaction():
+        with sub_step(timings, "search.db", "Vector query (pgvector)", parent="search"), self.conn.transaction():
             # search more of the HNSW graph so date filters still leave enough matches
             self.conn.execute("SET LOCAL hnsw.ef_search = 200")
             rows = self.conn.execute(sql, [np.asarray(vec), *params, np.asarray(vec), k * 4]).fetchall()

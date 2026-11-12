@@ -35,6 +35,7 @@ class AnthropicLLM:
 
         self.model = model
         self.client = client or anthropic.Anthropic()
+        self.last_usage: dict | None = None
 
     def parse(self, *, system: str, content: list[dict], schema: type[T], max_tokens: int, effort: str) -> T:
         import anthropic
@@ -61,6 +62,14 @@ class AnthropicLLM:
         except anthropic.APIConnectionError as e:
             raise LLMError("Can't reach the LLM API (network error).") from e
 
+        usage = response.usage
+        # read by the latency timeline (model + token counts of the last call)
+        self.last_usage = {
+            "model": response.model,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_read_tokens": getattr(usage, "cache_read_input_tokens", None) or 0,
+        }
         if response.stop_reason == "refusal":
             raise LLMError("The LLM declined this request.")
         if response.stop_reason == "max_tokens":

@@ -1,4 +1,4 @@
-import { CalendarDays, Play, Search, Video } from "lucide-react";
+import { Gauge, Play, Search, Video } from "lucide-react";
 import { NavLink } from "react-router-dom";
 
 export default function Sidebar() {
@@ -13,8 +13,8 @@ export default function Sidebar() {
         </div>
       </div>
       <NavLink to="/videos" className={link}><Video size={19} /> Videos</NavLink>
-      <NavLink to="/journal" className={link}><CalendarDays size={19} /> Daily Journal</NavLink>
       <NavLink to="/ask" className={link}><Search size={19} /> Ask / Search</NavLink>
+      <NavLink to="/latency" className={link}><Gauge size={19} /> Latency</NavLink>
     </nav>
   );
 }

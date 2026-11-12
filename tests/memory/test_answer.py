@@ -18,7 +18,7 @@ class FakeStore:
     def __init__(self, hits):
         self.hits, self.calls = hits, []
 
-    def search(self, text, k, date_from=None, date_to=None):
+    def search(self, text, k, date_from=None, date_to=None, timings=None):
         self.calls.append((text, date_from, date_to))
         return self.hits
 

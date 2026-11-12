@@ -73,6 +73,28 @@ def write_status(folder: Path, **fields) -> dict:
     return data
 
 
+def pre_processing_spans(status: dict, started: float) -> list[dict]:
+    """Timeline spans before processing starts: upload, saving the file, queue wait.
+    The upload start comes from the browser; local browser and server share a clock."""
+    spans = []
+    client, received, saved = (status.get("upload_started_at"), status.get("received_at"),
+                                status.get("saved_at"))
+    queued = status.get("queued_at")
+    if client and received and received >= client:
+        spans.append(_span("upload", "Upload (browser to server)", client, received, "io",
+                           {"bytes": status.get("size_bytes")}))
+    if received and saved:
+        spans.append(_span("save_upload", "Save upload to disk", received, saved, "io"))
+    if queued and started >= queued:
+        spans.append(_span("queue", "Waiting in queue", queued, started, "io"))
+    return spans
+
+
+def _span(name: str, label: str, start: float, end: float, kind: str, meta: dict | None = None) -> dict:
+    return {"name": name, "label": label, "kind": kind, "parent": None, "start": start, "end": end,
+            "duration": round(end - start, 3), "meta": meta or {}}
+
+
 @dataclass
 class Job:
     video_id: str
@@ -107,13 +129,14 @@ class JobQueue:
 
     def submit(self, job: Job) -> None:
         write_status(self.out_root / job.video_id, status="queued", step="queued",
-                     progress=0, error=None, video_path=str(job.video_path), date=job.date)
+                     progress=0, error=None, video_path=str(job.video_path), date=job.date,
+                     queued_at=time.time(), started_at=None, step_started_at=None, finished_at=None)
         self._queue.put(job)
 
     def run_now(self, job: Job) -> None:
         """Process in the calling thread (used by tests)."""
-        write_status(self.out_root / job.video_id, status="queued", step="queued",
-                     progress=0, error=None, video_path=str(job.video_path), date=job.date)
+        self.submit(job)
+        self._queue.get_nowait()
         self._run(job)
 
     def _requeue_unfinished(self) -> None:
@@ -135,12 +158,16 @@ class JobQueue:
         folder = self.out_root / job.video_id
 
         def on_step(name: str) -> None:
-            write_status(folder, status="processing", step=name, progress=STEP_PROGRESS.get(name, 0))
+            write_status(folder, status="processing", step=name, progress=STEP_PROGRESS.get(name, 0),
+                         step_started_at=time.time())
 
         try:
-            write_status(folder, status="processing", step="validating", progress=2, started_at=time.time())
+            started = time.time()
+            status = write_status(folder, status="processing", step="validating", progress=2,
+                                  started_at=started, step_started_at=started)
             self.process_fn(job.video_path, job.date, self.out_root, self.settings,
-                            video_id=job.video_id, on_step=on_step, log=lambda m: None)
+                            video_id=job.video_id, on_step=on_step, log=lambda m: None,
+                            extra_spans=pre_processing_spans(status, started), source="dashboard")
             write_status(folder, status="done", step="done", progress=100, finished_at=time.time())
         except Exception as e:  # report any failure to the dashboard
             write_status(folder, status="failed", step="failed", error=str(e) or type(e).__name__,

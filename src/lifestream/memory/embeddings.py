@@ -42,6 +42,10 @@ class LocalEmbedder:
 _cache: dict[str, LocalEmbedder] = {}
 
 
+def is_loaded(model_name: str) -> bool:
+    return model_name in _cache
+
+
 def get_embedder(model_name: str) -> LocalEmbedder:
     """Load once per process (loading takes several seconds)."""
     if model_name not in _cache:

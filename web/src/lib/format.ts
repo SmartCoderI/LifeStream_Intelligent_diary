@@ -54,3 +54,25 @@ export function speakerColors(speakersInOrder: string[]): Record<string, string>
   speakersInOrder.forEach((s, i) => (map[s] = SPEAKER_COLORS[i % SPEAKER_COLORS.length]));
   return map;
 }
+
+/** 0.85 -> "850 ms", 12.34 -> "12.3 s", 245 -> "4 min 05 s" */
+export function duration(seconds: number | null | undefined): string {
+  if (seconds == null || !isFinite(seconds)) return "–";
+  if (seconds < 1) return `${Math.round(seconds * 1000)} ms`;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 2 : 1)} s`;
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m} min ${String(Math.round(seconds % 60)).padStart(2, "0")} s`;
+  return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`;
+}
+
+/** epoch seconds -> local "14:03:27.512" */
+export function clockTime(epochSeconds: number): string {
+  const d = new Date(epochSeconds * 1000);
+  const p = (n: number, w = 2) => String(n).padStart(w, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
+
+/** 12345 -> "12.3k" */
+export function compactNumber(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
+}

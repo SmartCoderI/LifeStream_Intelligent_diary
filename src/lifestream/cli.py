@@ -179,12 +179,20 @@ def ask(
     """Ask a question about your videos (F9)."""
     from .intelligence.llm import AnthropicLLM
     from .memory.answer import answer_question
-    from .timing import fmt_ts
+    from .timing import Timings, fmt_ts
 
     settings = get_settings()
     day = dt.date.fromisoformat(today) if today else dt.date.today()
-    with _store_or_exit() as store:
-        result = answer_question(question, store, AnthropicLLM(settings.llm_model), day, settings.search_k)
+    timings = Timings()
+    with timings.step("connect.load_model", "Load embedding model", kind="load"):
+        from .memory.embeddings import get_embedder
+        get_embedder(settings.embed_model)
+    with timings.step("connect.db", "Connect to database"):
+        store = _store_or_exit()
+    with store:
+        result = answer_question(question, store, AnthropicLLM(settings.llm_model), day, settings.search_k,
+                                 timings=timings)
+    tl = timings.finish()
     if result.date_from:
         typer.secho(f"(searched {result.date_from} to {result.date_to})", dim=True)
     typer.echo(result.answer)
@@ -192,6 +200,8 @@ def ask(
         typer.echo("\nSources:")
         for c in result.citations:
             typer.echo(f"  [{c.video_id} @ {fmt_ts(c.start)}] {c.title} · {c.date} · {c.section}")
+    parts = ", ".join(f"{s['name']} {s['duration']:.2f}s" for s in tl["spans"])
+    typer.secho(f"\n(took {tl['total']:.2f}s: {parts})", dim=True)
 
 
 @app.command()
