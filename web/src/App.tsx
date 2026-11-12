@@ -1,9 +1,14 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import Sidebar from "./components/layout/Sidebar";
 import AskPage from "./pages/AskPage";
-import DiariesPage from "./pages/DiariesPage";
+import JournalPage from "./pages/JournalPage";
 import VideoPage from "./pages/VideoPage";
 import VideosPage from "./pages/VideosPage";
+
+function OldDiaryRedirect() {
+  const { date } = useParams();
+  return <Navigate to={`/journal/${date}`} replace />;
+}
 
 export default function App() {
   return (
@@ -14,8 +19,11 @@ export default function App() {
           <Route path="/" element={<Navigate to="/videos" replace />} />
           <Route path="/videos" element={<VideosPage />} />
           <Route path="/videos/:id" element={<VideoPage />} />
-          <Route path="/diaries" element={<DiariesPage />} />
-          <Route path="/diaries/:date" element={<DiariesPage />} />
+          <Route path="/journal" element={<JournalPage />} />
+          <Route path="/journal/:date" element={<JournalPage />} />
+          {/* old links */}
+          <Route path="/diaries" element={<Navigate to="/journal" replace />} />
+          <Route path="/diaries/:date" element={<OldDiaryRedirect />} />
           <Route path="/ask" element={<AskPage />} />
           <Route path="*" element={<p className="empty">Page not found.</p>} />
         </Routes>

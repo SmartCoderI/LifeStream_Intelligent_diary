@@ -47,7 +47,7 @@ export default function AskPage() {
     <>
       <header className="page-header">
         <h1>Ask Your Videos</h1>
-        <p>Search across your videos and diaries in plain language. Time phrases like "last week" narrow the search.</p>
+        <p>Search across your videos, summaries and daily journal in plain language. Time phrases like "last week" narrow the search.</p>
       </header>
 
       {status && !status.available && (

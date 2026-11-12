@@ -41,16 +41,16 @@ function Location({ value, source }: { value: string; source: string }) {
   );
 }
 
-export default function DiaryTab({ summary, colors, onSeek }: Props) {
+export default function SummaryTab({ summary, colors, onSeek }: Props) {
   const m = summary.meeting;
   const v = summary.vlog;
   const body = m ?? v;
   if (!body) return <p className="muted">No summary.</p>;
 
   return (
-    <article className="diary">
+    <article className="summary-doc">
       <h2>{body.title}</h2>
-      <div className="diary-meta">
+      <div className="summary-meta">
         <span className="badge badge-type">{summary.classification.type}</span>
         <span><CalendarDays size={14} /> {longDate(summary.date)}</span>
         <span><Clock size={14} /> {clock(summary.duration)}</span>

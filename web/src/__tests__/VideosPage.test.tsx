@@ -17,7 +17,7 @@ test("shows processing, completed and failed videos", async () => {
   expect(within(rows[0]).getByText(/532 MB/)).toBeInTheDocument();
 
   expect(within(rows[1]).getByText("Completed")).toBeInTheDocument();
-  expect(within(rows[1]).getByRole("link", { name: /View Diary/ })).toHaveAttribute("href", "/videos/team-meeting");
+  expect(within(rows[1]).getByRole("link", { name: /View Summary/ })).toHaveAttribute("href", "/videos/team-meeting");
   expect(within(rows[1]).getByText("01:38")).toBeInTheDocument();
 
   expect(within(rows[2]).getByText("Failed")).toBeInTheDocument();

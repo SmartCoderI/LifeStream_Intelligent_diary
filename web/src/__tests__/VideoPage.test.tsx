@@ -5,7 +5,13 @@ import { processingDetail } from "./fixtures";
 import { renderAt } from "./render";
 import { server } from "./server";
 
-test("diary tab shows summary, decisions, discussion and action items", async () => {
+test("summary tab shows overview, decisions, discussion and action items", async () => {
+  renderAt("/videos/team-meeting");
+  expect(await screen.findByRole("tab", { name: /Summary/ })).toHaveAttribute("aria-selected", "true");
+  expect(screen.queryByRole("tab", { name: /Diary/ })).not.toBeInTheDocument();
+});
+
+test("summary tab content", async () => {
   renderAt("/videos/team-meeting");
   expect(await screen.findByRole("heading", { level: 2, name: "Weekly Student Success Meeting" })).toBeInTheDocument();
   expect(screen.getByText(/Staff discussed Friday absences/)).toBeInTheDocument();

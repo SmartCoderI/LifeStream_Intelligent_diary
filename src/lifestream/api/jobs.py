@@ -41,7 +41,7 @@ STEP_LABELS = {
     "detecting_scenes": "Detecting scenes",
     "merging": "Building the script",
     "classifying": "Classifying video",
-    "summarizing": "Writing the diary",
+    "summarizing": "Writing the summary",
     "indexing": "Adding to search",
     "done": "Completed",
     "failed": "Failed",

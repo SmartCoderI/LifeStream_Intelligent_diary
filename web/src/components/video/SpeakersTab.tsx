@@ -2,7 +2,7 @@ import { Check, Pencil } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, type SpeakerStat } from "../../lib/api";
 import { clock } from "../../lib/format";
-import { SpeakerChip } from "./DiaryTab";
+import { SpeakerChip } from "./SummaryTab";
 
 interface Props {
   videoId: string;
@@ -30,7 +30,7 @@ export default function SpeakersTab({ videoId, speakers, colors, onSaved }: Prop
       const res = await api.setSpeakers(videoId, names);
       setEditing(false);
       setMessage(res.indexed || !res.index_error
-        ? { text: "Names saved. The diary and search now use them." }
+        ? { text: "Names saved. The summary, daily journal and search now use them." }
         : { text: `Names saved, but search wasn't updated: ${res.index_error}`, error: true });
       onSaved();
     } catch (e) {
@@ -45,7 +45,7 @@ export default function SpeakersTab({ videoId, speakers, colors, onSaved }: Prop
       <div className="speakers-head">
         <p className="muted" style={{ margin: 0 }}>
           {speakers.length} speaker{speakers.length === 1 ? "" : "s"} identified from their voices.
-          {!editing && " Name them to use real names in the diary and search."}
+          {!editing && " Name them to use real names in summaries and search."}
         </p>
         {!editing && <button className="btn" onClick={() => setEditing(true)}><Pencil size={15} /> Name speakers</button>}
       </div>

@@ -9,7 +9,7 @@ export default function VideosPage() {
   const { data: videos, error, refresh } = usePolling(api.listVideos, busy);
 
   const remove = async (v: VideoItem) => {
-    if (!window.confirm(`Delete "${v.title}" and its diary? This can't be undone.`)) return;
+    if (!window.confirm(`Delete "${v.title}" and its summary? This can't be undone.`)) return;
     try {
       await api.deleteVideo(v.video_id);
     } catch (e) {
@@ -31,7 +31,7 @@ export default function VideosPage() {
     <>
       <header className="page-header">
         <h1>Videos</h1>
-        <p>Upload videos, track processing, and read your diaries.</p>
+        <p>Upload videos, track processing, and read their summaries.</p>
       </header>
       <div className="videos-grid">
         <UploadCard onUploaded={() => refresh().then(() => setTimeout(refresh, 2000))} />

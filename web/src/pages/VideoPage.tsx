@@ -2,7 +2,7 @@ import { ArrowLeft, BookOpen, Check, Clapperboard, FileText, Loader2, Play, User
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api, type VideoDetail } from "../lib/api";
-import DiaryTab from "../components/video/DiaryTab";
+import SummaryTab from "../components/video/SummaryTab";
 import ScenesTab from "../components/video/ScenesTab";
 import SpeakersTab from "../components/video/SpeakersTab";
 import StatusBadge, { ProgressBar } from "../components/library/StatusBadge";
@@ -10,9 +10,9 @@ import TranscriptTab from "../components/video/TranscriptTab";
 import { clock, parseTimestamp, speakerColors } from "../lib/format";
 import { usePolling } from "../lib/usePolling";
 
-type Tab = "diary" | "transcript" | "speakers" | "scenes";
+type Tab = "summary" | "transcript" | "speakers" | "scenes";
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-  { id: "diary", label: "Diary", icon: <BookOpen size={16} /> },
+  { id: "summary", label: "Summary", icon: <BookOpen size={16} /> },
   { id: "transcript", label: "Transcript", icon: <FileText size={16} /> },
   { id: "speakers", label: "Speakers", icon: <Users size={16} /> },
   { id: "scenes", label: "Scenes", icon: <Clapperboard size={16} /> },
@@ -25,7 +25,7 @@ const STEPS = [
   ["detecting_scenes", "Detecting scenes"],
   ["merging", "Building the script"],
   ["classifying", "Classifying video"],
-  ["summarizing", "Writing the diary"],
+  ["summarizing", "Writing the summary"],
   ["indexing", "Adding to search"],
 ] as const;
 
@@ -79,7 +79,7 @@ export default function VideoPage() {
   const [params] = useSearchParams();
   const startAt = Number(params.get("t") ?? "");
   const { data: video, error, refresh } = usePolling(() => api.getVideo(id), (v) => v.status === "queued" || v.status === "processing");
-  const [tab, setTab] = useState<Tab>("diary");
+  const [tab, setTab] = useState<Tab>("summary");
   const [time, setTime] = useState(0);
   const player = useRef<HTMLVideoElement>(null);
 
@@ -144,7 +144,7 @@ export default function VideoPage() {
               )}
             </div>
             <div>
-              {tab === "diary" && <DiaryTab summary={video.summary!} colors={colors} onSeek={seek} />}
+              {tab === "summary" && <SummaryTab summary={video.summary!} colors={colors} onSeek={seek} />}
               {tab === "transcript" && <TranscriptTab script={video.script} colors={colors} currentTime={time} onSeek={seek} />}
               {tab === "speakers" && <SpeakersTab videoId={video.video_id} speakers={video.speakers} colors={colors} onSaved={refresh} />}
               {tab === "scenes" && <ScenesTab keyframes={video.keyframes} onSeek={seek} />}

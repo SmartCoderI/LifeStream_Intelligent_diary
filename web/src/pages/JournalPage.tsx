@@ -4,7 +4,7 @@ import { Link, Navigate, NavLink, useParams } from "react-router-dom";
 import { api, type DayDetail, type DayItem } from "../lib/api";
 import { clock, longDate } from "../lib/format";
 
-export default function DiariesPage() {
+export default function JournalPage() {
   const { date } = useParams();
   const [days, setDays] = useState<DayItem[] | null>(null);
   const [day, setDay] = useState<DayDetail | null>(null);
@@ -20,7 +20,7 @@ export default function DiariesPage() {
     api.getDay(date).then(setDay).catch((e) => setError(e.message));
   }, [date]);
 
-  if (!date && days && days.length > 0) return <Navigate to={`/diaries/${days[0].date}`} replace />;
+  if (!date && days && days.length > 0) return <Navigate to={`/journal/${days[0].date}`} replace />;
 
   const actions = day?.videos.flatMap((v) => {
     const items = v.summary.meeting?.action_items ?? v.summary.vlog?.action_items ?? [];
@@ -30,16 +30,16 @@ export default function DiariesPage() {
   return (
     <>
       <header className="page-header">
-        <h1>Diaries</h1>
-        <p>One entry per day, combining every video recorded that day.</p>
+        <h1>Daily Journal</h1>
+        <p>One entry per day, combining every video you recorded that day.</p>
       </header>
       {error && <div className="card empty error-text" role="alert">{error}</div>}
-      {days && days.length === 0 && <div className="card empty">No diaries yet. Process a video first.</div>}
+      {days && days.length === 0 && <div className="card empty">No journal entries yet. Process a video first.</div>}
       {days && days.length > 0 && (
-        <div className="diaries-layout">
+        <div className="journal-layout">
           <nav className="card day-list" aria-label="Days">
             {days.map((d) => (
-              <NavLink key={d.date} to={`/diaries/${d.date}`} className={({ isActive }) => `day-link${isActive ? " active" : ""}`}>
+              <NavLink key={d.date} to={`/journal/${d.date}`} className={({ isActive }) => `day-link${isActive ? " active" : ""}`}>
                 <span>{longDate(d.date)}</span>
                 <span className="muted">{d.video_count}</span>
               </NavLink>
@@ -65,7 +65,7 @@ export default function DiariesPage() {
                       </Link>
                       <div>
                         <h3><Link to={`/videos/${v.video_id}`}>{body?.title ?? v.title}</Link></h3>
-                        <div className="diary-meta" style={{ margin: "0 0 8px" }}>
+                        <div className="summary-meta" style={{ margin: "0 0 8px" }}>
                           <span className="badge badge-type">{v.summary.classification.type}</span>
                           {body && body.location.source !== "unknown" && <span>{body.location.value}</span>}
                         </div>

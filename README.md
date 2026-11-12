@@ -54,8 +54,8 @@ src/lifestream/
 tests/                      same layout as src/lifestream/
 docs/rag-notes.md           RAG background and the choices made here
 web/src/
-├── pages/                  Videos, Video (diary), Diaries, Ask
-├── components/             layout/, library/ (upload + list), video/ (diary tabs)
+├── pages/                  Videos, Video (summary), Daily Journal, Ask
+├── components/             layout/, library/ (upload + list), video/ (video page tabs)
 └── lib/                    API client, formatting, polling
 ```
 
@@ -83,12 +83,12 @@ The first run downloads the speech models (~2 GB).
 Ctrl+C stops both the backend and the web server.
 
 - **Videos**: upload a video with its recording date, watch processing progress, retry or delete.
-- **Video page**: player plus Diary / Transcript / Speakers / Scenes tabs; every timestamp
+- **Video page**: player plus Summary / Transcript / Speakers / Scenes tabs; every timestamp
   and key moment jumps the player to that point.
-- **Diaries**: one entry per day, combining all videos recorded that day.
+- **Daily Journal**: one entry per day, combining all videos recorded that day.
 - **Ask / Search**: questions in plain language ("What did we discuss about the frontend
   last week?"); answers cite the video and moment, and each source opens the video there.
-- **Speakers tab**: name speakers; the diary, transcript and search use the names.
+- **Speakers tab**: name speakers; summaries, the journal, transcripts and search use the names.
 
 Uploads are saved in `data/uploads/` and processed one at a time in the background.
 Web tests: `cd web && npm test`.

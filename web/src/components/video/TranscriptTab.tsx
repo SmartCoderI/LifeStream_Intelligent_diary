@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ScriptSegment } from "../../lib/api";
 import { clock } from "../../lib/format";
-import { SpeakerChip } from "./DiaryTab";
+import { SpeakerChip } from "./SummaryTab";
 
 interface Props {
   script: ScriptSegment[];

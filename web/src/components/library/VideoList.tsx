@@ -12,7 +12,7 @@ interface Props {
 
 export default function VideoList({ videos, onDelete, onRetry }: Props) {
   if (videos.length === 0) {
-    return <div className="card empty">No videos yet. Upload one to create your first diary.</div>;
+    return <div className="card empty">No videos yet. Upload one to get your first summary.</div>;
   }
   return (
     <div className="card video-list">
@@ -45,7 +45,7 @@ export default function VideoList({ videos, onDelete, onRetry }: Props) {
             </div>
             <div className="row-actions">
               {v.status === "done" && (
-                <Link className="btn" to={`/videos/${v.video_id}`}><BookOpen size={16} /> View Diary</Link>
+                <Link className="btn" to={`/videos/${v.video_id}`}><BookOpen size={16} /> View Summary</Link>
               )}
               {v.status === "failed" && (
                 <button className="btn" onClick={() => onRetry(v)}><RotateCw size={16} /> Retry</button>
