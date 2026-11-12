@@ -1,0 +1,68 @@
+import type { DayDetail, VideoDetail, VideoItem } from "../api";
+
+const now = Date.now() / 1000;
+
+export const processingVideo: VideoItem = {
+  video_id: "travel-vlog", title: "travel_vlog", original_name: "travel_vlog.mp4", date: "2026-11-04",
+  duration: 624, size_bytes: 532 * 1024 ** 2, uploaded_at: now - 120, status: "processing",
+  step: "diarizing", step_label: "Identifying speakers", progress: 45, error: null, type: null, thumbnail: null,
+};
+
+export const doneVideo: VideoItem = {
+  video_id: "team-meeting", title: "Weekly Student Success Meeting", original_name: "team.mp4",
+  date: "2026-11-04", duration: 98, size_bytes: 14 * 1024 ** 2, uploaded_at: now - 3600, status: "done",
+  step: "done", step_label: "Completed", progress: 100, error: null, type: "meeting",
+  thumbnail: "/api/videos/team-meeting/keyframes/frame_000003253.jpg",
+};
+
+export const failedVideo: VideoItem = {
+  ...doneVideo, video_id: "broken", title: "broken", status: "failed", step: "failed",
+  step_label: "Failed", progress: 0, error: "broken.mp4 has no audio stream; nothing to transcribe.", type: null,
+  thumbnail: null,
+};
+
+export const meetingDetail: VideoDetail = {
+  ...doneVideo,
+  summary: {
+    video_id: "team-meeting", date: "2026-11-04", duration: 98,
+    classification: { type: "meeting", confidence: "high", reason: "five speakers" },
+    vlog: null,
+    meeting: {
+      title: "Weekly Student Success Meeting",
+      overview: "Staff discussed Friday absences and one student's situation.",
+      location: { value: "Unknown", source: "unknown" },
+      attendees: ["SPEAKER_00", "SPEAKER_01"],
+      topics: [
+        { title: "Friday absenteeism", points: [
+          { speaker: "SPEAKER_00", timestamp: "00:00:05", content: "Many students skip on Fridays." },
+          { speaker: "SPEAKER_01", timestamp: "00:00:17", content: "Suggested a pancake breakfast." },
+        ] },
+        { title: "John Smith", points: [
+          { speaker: "SPEAKER_01", timestamp: "00:01:00", content: "John is caring for his siblings." },
+        ] },
+      ],
+      decisions: ["Try a pancake breakfast next Friday"],
+      action_items: [{ owner: "SPEAKER_01", task: "Put up flu-season posters", timestamp: "00:00:30", due: null }],
+    },
+  },
+  script: [
+    { start: 0, end: 15, speaker: "SPEAKER_00", text: "Hello everyone, thanks for coming.", frames: [] },
+    { start: 16, end: 29, speaker: "SPEAKER_01", text: "My mentees find Fridays hard.", frames: [] },
+  ],
+  keyframes: [{ time: 3.2, path: "keyframes/frame_000003253.jpg", url: "/api/videos/team-meeting/keyframes/frame_000003253.jpg" }],
+  speakers: [
+    { speaker: "SPEAKER_00", seconds: 15, turns: 1, share: 0.54, first_seen: 0 },
+    { speaker: "SPEAKER_01", seconds: 13, turns: 1, share: 0.46, first_seen: 16 },
+  ],
+  timings: { total: 106 },
+};
+
+export const processingDetail: VideoDetail = {
+  ...processingVideo, summary: null, script: [], keyframes: [], speakers: [], timings: null,
+};
+
+export const day: DayDetail = {
+  date: "2026-11-04",
+  markdown: "# Daily Summary: 2026-11-04",
+  videos: [{ ...doneVideo, summary: meetingDetail.summary! }],
+};

@@ -87,20 +87,27 @@ def process_video(
     run_llm: bool = True,
     parallel: bool = True,
     log: Callable[[str], None] = print,
+    video_id: str | None = None,
+    on_step: Callable[[str], None] | None = None,
 ) -> Path:
-    """Process one video. Returns its output folder."""
+    """Process one video. Returns its output folder.
+
+    `on_step(name)` is called as each step starts (used by the dashboard for progress).
+    """
     components = components or Components()
+    step = on_step or (lambda name: None)
     timings = Timings()
     t0 = time.perf_counter()
 
     video = Path(video)
     out_root = Path(out_root)
-    vid = video_id_for(video, out_root)
+    vid = video_id or video_id_for(video, out_root)
     out = out_root / vid
     out.mkdir(parents=True, exist_ok=True)
     cached: list[str] = []
 
     # ---- F1: validate + metadata + audio ----
+    step("validating")
     with timings.step("probe"):
         info = media.probe(video)
     (out / "metadata.json").write_text(json.dumps(
@@ -111,6 +118,7 @@ def process_video(
     if wav.exists() and not force:
         cached.append("extract_audio")
     else:
+        step("extracting_audio")
         with timings.step("extract_audio"):
             media.extract_audio(video, wav)
 
@@ -141,6 +149,7 @@ def process_video(
             words = _load_list(words_path, Word)
             cached.append("transcribe")
         else:
+            step("transcribing")
             log(f"[{vid}] transcribing ({settings.whisper_model}, {settings.device})...")
             with timings.step("transcribe"):
                 words = components.transcribe(wav, settings)
@@ -151,6 +160,7 @@ def process_video(
             speaker_segments = _load_list(diar_path, SpeakerSegment)
             cached.append("diarize")
         else:
+            step("diarizing")
             log(f"[{vid}] diarizing...")
             with timings.step("diarize"):
                 speaker_segments = components.diarize(
@@ -160,6 +170,7 @@ def process_video(
         timings.record("audio_branch", time.perf_counter() - audio_start)
 
         # ---- wait for the visual branch ----
+        step("detecting_scenes")
         if visual_cached:
             scene_list = _load_list(scenes_path, Scene)
             keyframes = _load_list(frames_path, Keyframe)
@@ -184,6 +195,7 @@ def process_video(
         f"{len(scene_list)} scenes, {len(keyframes)} keyframes")
 
     # ---- F3 merge + F5 frame sync -> script ----
+    step("merging")
     with timings.step("merge_and_sync"):
         turns = merge.build_turns(words, speaker_segments)
         segments = sync.attach_frames(turns, keyframes)
@@ -193,10 +205,12 @@ def process_video(
     # ---- F6 classify + summarize ----
     if run_llm:
         llm = llm or AnthropicLLM(settings.llm_model)
+        step("classifying")
         log(f"[{vid}] classifying...")
         with timings.step("classify"):
             classification = summarize.classify(
                 llm, segments, keyframes, out, info.duration, window_s=settings.classify_window_s)
+        step("summarizing")
         log(f"[{vid}] type: {classification.type} ({classification.confidence}); summarizing...")
         with timings.step("summarize"):
             body = summarize.summarize(llm, classification.type, segments, keyframes, out,

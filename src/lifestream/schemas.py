@@ -91,6 +91,7 @@ class VlogActionItem(BaseModel):
 
 class VlogSummary(BaseModel):
     title: str
+    overview: str = Field(description="2-3 sentence summary of the whole video.")
     location: Location
     activities: list[Activity]
     action_items: list[VlogActionItem] = Field(description="Empty list if there are none.")
@@ -116,9 +117,11 @@ class MeetingActionItem(BaseModel):
 
 class MeetingSummary(BaseModel):
     title: str
+    overview: str = Field(description="2-3 sentence summary of the whole meeting.")
     location: Location
     attendees: list[str]
     topics: list[MeetingTopic]
+    decisions: list[str] = Field(description="Decisions the group agreed on. Empty list if none.")
     action_items: list[MeetingActionItem] = Field(description="Empty list if there are none.")
 
 

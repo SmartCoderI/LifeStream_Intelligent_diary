@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 from jinja2 import Environment, PackageLoader, StrictUndefined
+from pydantic import ValidationError
 
 from .llm import LLMClient
 from .schemas import (
@@ -51,6 +52,7 @@ You write a diary entry for a vlog-style video from its timestamped \
 transcript and keyframes.
 
 - title: a short descriptive title.
+- overview: 2-3 sentences summarizing the whole video.
 - location: where it was recorded. Use what the transcript or frames show. \
 If you are guessing from visual or spoken clues, use source "inferred". If \
 there is no clue, use value "Unknown" and source "unknown".
@@ -64,6 +66,7 @@ You write detailed minutes for a meeting or conversation from its timestamped \
 transcript and keyframes.
 
 - title: a short descriptive title.
+- overview: 2-3 sentences summarizing the whole meeting and its outcome.
 - location: where it took place, from transcript or frame clues ("inferred"), \
 otherwise value "Unknown" and source "unknown".
 - attendees: every speaker label in the transcript (e.g. SPEAKER_00). If the \
@@ -73,6 +76,8 @@ substantive points in order. Each point has the speaker label exactly as in \
 the transcript, the timestamp (HH:MM:SS) where it was said, and what was said \
 in one or two specific sentences (numbers, names and reasons, not vague \
 paraphrase). Aim for at least one point per minute of substantive discussion.
+- decisions: what the group agreed on, one sentence each. Empty list if \
+nothing was decided; do not invent any.
 - action_items: concrete commitments or tasks, each with the owner's speaker \
 label (or "Unassigned"), the timestamp where it was agreed, and a due date \
 only if one was stated. Empty list if there are none; do not invent any."""
@@ -209,9 +214,15 @@ def render_diary(date: str, videos: list[VideoSummary]) -> str:
 
 
 def load_summaries(out_root: Path, date: str) -> list[VideoSummary]:
+    """Summaries for one date. Unreadable or outdated summary files are skipped,
+    so one bad file can't break every daily diary."""
     found = []
     for path in sorted(out_root.glob("*/summary.json")):
-        v = VideoSummary.model_validate(json.loads(path.read_text()))
-        if v.date == date:
-            found.append(v)
+        try:
+            raw = json.loads(path.read_text())
+            if raw.get("date") != date:
+                continue
+            found.append(VideoSummary.model_validate(raw))
+        except (json.JSONDecodeError, ValidationError) as e:
+            print(f"Skipping {path}: {e.__class__.__name__}")
     return found

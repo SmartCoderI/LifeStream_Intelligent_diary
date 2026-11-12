@@ -19,6 +19,8 @@ class FakeLLM:
         if schema is MeetingSummary:
             return MeetingSummary(
                 title="Frontend sync",
+                overview="The team reviewed the redesign.",
+                decisions=["Ship the navigation bar on Friday"],
                 location=Location(value="Unknown", source="unknown"),
                 attendees=["SPEAKER_00", "SPEAKER_01"],
                 topics=[MeetingTopic(title="Navigation bar", points=[
@@ -30,6 +32,7 @@ class FakeLLM:
             )
         return VlogSummary(
             title="Morning walk",
+            overview="A walk through the park.",
             location=Location(value="City park", source="inferred"),
             activities=[Activity(time="00:00:00", description="Walks through the park")],
             action_items=[],

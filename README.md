@@ -3,7 +3,8 @@
 Turns video recordings (vlogs, meetings, body-cam footage) into a timestamped
 script and a structured daily diary.
 
-**Status:** Stage 1 (core processing engine, local), without F7 (cloud infrastructure).
+**Status:** Stage 1 (core processing engine, local), without F7 (cloud infrastructure),
+plus a local web dashboard (upload, progress, diary view).
 
 ## Pipeline
 
@@ -26,6 +27,8 @@ Speaker identification uses acoustic models only (pyannote); no LLM decides who 
 | `sync.py` | F5 frames ↔ text by timestamp |
 | `summarize.py`, `llm.py`, `templates/` | F6 classification, summaries, Markdown |
 | `pipeline.py` | Runs everything; saves each step; records step timings |
+| `api.py`, `jobs.py` | Dashboard API and background processing queue |
+| `web/` | React dashboard (Vite + TypeScript) |
 | `evals.py` | M1 speaker accuracy, M3b classification checks |
 | `testdata.py` | Generated test data with known answers |
 
@@ -43,7 +46,24 @@ cp .env.example .env    # then fill in the two keys
 
 The first run downloads the speech models (~2 GB).
 
-## Use
+## Dashboard
+
+```bash
+cd web && npm install && npm run build && cd ..   # once (and after changing the web app)
+uv run lifestream serve                            # then open http://127.0.0.1:8000
+```
+
+- **Videos**: upload a video with its recording date, watch processing progress, retry or delete.
+- **Video page**: player plus Diary / Transcript / Speakers / Scenes tabs; every timestamp
+  and key moment jumps the player to that point.
+- **Diaries**: one entry per day, combining all videos recorded that day.
+- Ask / Search arrives with Stage 2.
+
+Uploads are saved in `data/uploads/` and processed one at a time in the background.
+Developing the web app: run `uv run lifestream serve` and, in `web/`, `npm run dev`
+(http://localhost:5173, live reload). Web tests: `cd web && npm test`.
+
+## Command line
 
 ```bash
 # process videos (date = recording date)

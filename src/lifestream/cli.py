@@ -137,5 +137,23 @@ def download_ami(out: Path = typer.Option(Path("data/ami")), meeting: str = "ES2
     typer.echo(fetch(out, meeting))
 
 
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1"),
+    port: int = typer.Option(8000),
+    out: Path = typer.Option(DEFAULT_OUT),
+):
+    """Start the dashboard API (and the built web app, if `web/dist` exists)."""
+    import uvicorn
+
+    from .api import create_app
+
+    built = Path("web/dist/index.html").exists()
+    typer.echo(f"Dashboard: http://{host}:{port}" if built else
+               f"API on http://{host}:{port}. For the web app run `npm run dev` in web/ "
+               "(or `npm run build` once to serve it from here).")
+    uvicorn.run(create_app(out_root=out), host=host, port=port, log_level="warning")
+
+
 def main() -> None:
     app()

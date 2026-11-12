@@ -56,6 +56,8 @@ def test_meeting_markdown_has_required_sections():
         assert header in md
     assert "**[00:00:01] SPEAKER_00:** point 1" in md
     assert "owner: SPEAKER_01, agreed at 00:00:05, due Thursday" in md
+    assert "The team reviewed the redesign." in md
+    assert "## Key Decisions\n\n- Ship the navigation bar on Friday" in md
 
 
 def test_vlog_markdown_has_required_sections_and_none_for_empty_items():
@@ -84,7 +86,7 @@ def test_detail_check_flags_thin_meeting_summary():
 
 
 def test_detail_check_flags_bad_timestamps():
-    m = MeetingSummary(title="t", location=Location(value="Unknown", source="unknown"),
+    m = MeetingSummary(title="t", overview="o", decisions=[], location=Location(value="Unknown", source="unknown"),
                        attendees=["A"], action_items=[],
                        topics=[MeetingTopic(title="x", points=[
                            MeetingPoint(speaker="A", timestamp="soon", content="c")])])
@@ -104,3 +106,14 @@ def test_keyframes_sent_as_images(tmp_path):
     blocks = llm.calls[0]["content"]
     assert [b["type"] for b in blocks] == ["text", "text", "image"]
     assert blocks[1]["text"] == "Keyframe at 00:00:05:"
+
+
+def test_load_summaries_skips_other_dates_and_bad_files(tmp_path):
+    good = video("meeting", vid="good")
+    (tmp_path / "good").mkdir()
+    (tmp_path / "good" / "summary.json").write_text(good.model_dump_json())
+    (tmp_path / "old").mkdir()
+    (tmp_path / "old" / "summary.json").write_text('{"date": "2026-11-03", "video_id": "old"}')
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "summary.json").write_text("{not json")
+    assert [v.video_id for v in summarize.load_summaries(tmp_path, "2026-11-03")] == ["good"]
