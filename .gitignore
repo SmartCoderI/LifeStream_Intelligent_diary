@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# secrets
+.env
+
+# data, models and pipeline outputs (large / personal)
+data/
+
+# test videos and audio stay local
+*.mp4
+*.mov
+*.mkv
+*.m4v
+*.webm
+*.avi
+*.wav
+*.mp3
+*.m4a
+*.aiff
+
+# macOS
+.DS_Store

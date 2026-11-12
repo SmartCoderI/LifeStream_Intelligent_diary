@@ -1,0 +1,7 @@
+# V3 (vlog stand-in): one-person news report about data centers
+slot: V3
+file: ../data_center_one_person.mp4
+video_id: data-center-one-person
+type: vlog
+speakers: 1
+test_date: 2026-11-03

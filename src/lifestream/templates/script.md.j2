@@ -1,0 +1,7 @@
+# Script
+
+| Time | Speaker | Text |
+|---|---|---|
+{% for s in segments %}
+| {{ s.start | ts }} | {{ s.speaker }} | {{ s.text | cell }}{% if s.frames %} *(frames: {{ s.frames | length }})*{% endif %} |
+{% endfor %}

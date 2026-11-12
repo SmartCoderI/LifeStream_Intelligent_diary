@@ -1,0 +1,16 @@
+# Daily Summary: {{ date }}
+
+{{ videos | length }} video{{ "s" if videos | length != 1 else "" }} recorded.
+
+{% for e in entries %}
+{{ e }}
+---
+
+{% endfor %}
+## All Action Items
+
+{% for a in action_items %}
+- [ ] {{ a.item.task }} *({{ a.video }})*
+{% else %}
+- None
+{% endfor %}

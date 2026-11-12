@@ -1,0 +1,7 @@
+# V6: student weekly meeting, 5 people (hard diarization case)
+slot: V6
+file: ../multiple_student.mp4
+video_id: multiple-student
+type: meeting
+speakers: 5
+test_date: 2026-11-04

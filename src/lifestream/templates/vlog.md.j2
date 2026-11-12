@@ -1,0 +1,25 @@
+# {{ s.title }}
+
+*{{ v.date }} · Vlog · {{ v.duration | ts }}*
+
+## Location
+
+{{ s.location.value }}{% if s.location.source == "inferred" %} *(inferred)*{% endif %}
+
+
+## Activity
+
+{% for a in s.activities %}
+- **{{ a.time }}** {{ a.description }}
+{% else %}
+- None
+{% endfor %}
+
+## Action Items
+
+{% for i in s.action_items %}
+- [ ] {{ i.task }}{% if i.owner %} ({{ i.owner }}){% endif %}
+
+{% else %}
+- None
+{% endfor %}

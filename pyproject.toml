@@ -1,0 +1,39 @@
+[project]
+name = "lifestream"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "SmartCoderI", email = "yuqingwula@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=2.8.0",
+    "jinja2>=3.1.6",
+    "pyannote-metrics>=4.2.0",
+    "pydantic>=2.14.3",
+    "python-dotenv>=1.2.4",
+    "pyyaml>=6.0.3",
+    "scenedetect>=0.7.3",
+    "typer>=0.29.1",
+    "whisperx>=3.8.6",
+]
+
+[project.scripts]
+lifestream = "lifestream:main"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = "-m 'not slow'"
+markers = ["slow: needs real models / downloads (run with -m slow)"]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::UserWarning"]

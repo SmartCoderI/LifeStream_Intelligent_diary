@@ -1,0 +1,9 @@
+# V1 (M1): generated 3-speaker conversation with overlapping speech.
+# Create with: uv run lifestream make-testdata
+# Exact labels: data/test/v1/conversation.rttm
+slot: V1
+file: data/test/v1/conversation.mp4
+video_id: conversation
+type: meeting
+speakers: 3
+test_date: 2026-11-05

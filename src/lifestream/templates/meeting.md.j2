@@ -1,0 +1,28 @@
+# {{ s.title }}
+
+*{{ v.date }} · Meeting · {{ v.duration | ts }} · Attendees: {{ s.attendees | join(", ") }}*
+
+## Location
+
+{{ s.location.value }}{% if s.location.source == "inferred" %} *(inferred)*{% endif %}
+
+
+## Activity
+
+{% for t in s.topics %}
+### {{ t.title }}
+
+{% for p in t.points %}
+- **[{{ p.timestamp }}] {{ p.speaker }}:** {{ p.content }}
+{% endfor %}
+
+{% else %}
+- None
+{% endfor %}
+## Action Items
+
+{% for a in s.action_items %}
+- [ ] {{ a.task }} (owner: {{ a.owner }}, agreed at {{ a.timestamp }}{% if a.due %}, due {{ a.due }}{% endif %})
+{% else %}
+- None
+{% endfor %}
