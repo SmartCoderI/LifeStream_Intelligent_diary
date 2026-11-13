@@ -44,16 +44,26 @@ def initialized():
             pytest.skip(f"terraform init failed (offline?): {result.stderr[-500:]}")
 
 
-@pytest.fixture(scope="session")
-def plan(initialized, tmp_path_factory) -> dict:
+def _plan(tmp_path_factory, *extra: str) -> dict:
     out = tmp_path_factory.mktemp("tf") / "test.tfplan"
     result = _tf("plan", "-input=false", "-lock=false", "-refresh=false", f"-out={out}",
                  "-var", "offline_plan=true", "-var", f"account_id={ACCOUNT}", "-var", f"region={REGION}",
-                 "-var", "vpc_id=vpc-0123456789abcdef0", "-var", 'subnet_ids=["subnet-0123456789abcdef0"]')
+                 "-var", "vpc_id=vpc-0123456789abcdef0", "-var", 'subnet_ids=["subnet-0123456789abcdef0"]',
+                 *extra)
     assert result.returncode == 0, result.stderr
     shown = _tf("show", "-json", str(out))
     assert shown.returncode == 0, shown.stderr
     return json.loads(shown.stdout)
+
+
+@pytest.fixture(scope="session")
+def plan(initialized, tmp_path_factory) -> dict:
+    return _plan(tmp_path_factory)
+
+
+@pytest.fixture(scope="session")
+def spot_plan(initialized, tmp_path_factory) -> dict:
+    return _plan(tmp_path_factory, "-var", "use_spot=true")
 
 
 def _resources(plan: dict, rtype: str) -> list[dict]:
@@ -244,6 +254,30 @@ def test_ecr_repository(plan):
     assert repo["image_scanning_configuration"][0]["scan_on_push"] is True
 
 
+def test_on_demand_by_default(plan):
+    (env,) = _resources(plan, "aws_batch_compute_environment")
+    assert env["name"] == "lifestream-gpu" and env["compute_resources"][0]["type"] == "EC2"
+    assert plan["variables"]["use_spot"]["value"] is False
+
+
+def test_spot_switch(spot_plan):
+    envs = {e["name"]: e["compute_resources"][0] for e in _resources(spot_plan, "aws_batch_compute_environment")}
+    spot = envs["lifestream-gpu-spot"]
+    assert spot["type"] == "SPOT" and spot["allocation_strategy"] == "SPOT_PRICE_CAPACITY_OPTIMIZED"
+    assert spot["min_vcpus"] == 0 and spot["instance_type"] == ["g4dn.xlarge"]
+    assert spot["ec2_configuration"][0]["image_type"] == "ECS_AL2023_NVIDIA"
+    assert spot_plan["planned_values"]["outputs"]["compute_environment"]["value"] == "lifestream-gpu-spot"
+
+
+def test_jobs_retry_only_when_the_instance_is_taken_away(plan):
+    strategy = _one(plan, "aws_batch_job_definition")["retry_strategy"][0]
+    assert strategy["attempts"] == 3
+    rules = [(r["action"].upper(), r.get("on_status_reason") or None, r.get("on_reason") or None)
+             for r in strategy["evaluate_on_exit"]]
+    assert rules[0] == ("RETRY", "Host EC2*", None)       # Spot reclaim / host failure
+    assert rules[-1][0] == "EXIT" and rules[-1][2] == "*"  # anything else fails straight away
+
+
 def test_gpu_compute_environment_scales_to_zero(plan):
     env = _one(plan, "aws_batch_compute_environment")
     resources = env["compute_resources"][0]
@@ -275,3 +309,4 @@ def test_job_definition(plan):
                                  f"arn:aws:ssm:{REGION}:{ACCOUNT}:parameter/lifestream/anthropic-api-key"}]
     assert not any(e["name"] == "ANTHROPIC_API_KEY" for e in props.get("environment", []))
     assert job["parameters"]["output"] == f"s3://{BUCKET}/out/"
+    assert {"name": "LLM_MODEL", "value": "claude-opus-5-5"} in props["environment"]

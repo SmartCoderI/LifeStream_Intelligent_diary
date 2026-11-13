@@ -333,6 +333,39 @@ def eval_coldstart(
     raise typer.Exit(0 if report["status"] == "SUCCEEDED" else 1)
 
 
+@app.command("eval-models")
+def eval_models(
+    model: list[str] = typer.Option(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
+                                    help="Claude models to compare (repeat the option); "
+                                         "MODEL@EFFORT sets the summary effort, e.g. claude-opus-5-5@low."),
+    video: list[str] = typer.Option(None, help="Video IDs in --out (default: every labelled, processed video)."),
+    labels: Path = typer.Option(Path("labels")),
+    out: Path = typer.Option(DEFAULT_OUT),
+    save: Path = typer.Option(Path("data/eval/models"), help="Where summaries and results are saved."),
+):
+    """Compare Claude models on classification + summary: M3b checks, tokens, cost (calls the API)."""
+    from .evaluation.models import compare_models, labelled_videos
+    from .intelligence.llm import AnthropicLLM
+
+    expected = labelled_videos(labels, out)
+    videos = {v: expected.get(v) for v in video} if video else expected
+    if not videos:
+        typer.echo(f"No processed videos with labels in {labels}/ (or pass --video).")
+        raise typer.Exit(1)
+    save_root = save / dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    runs = compare_models(list(model), videos, out, save_root, get_settings(), AnthropicLLM, log=typer.echo)
+
+    typer.echo(f"\n{'video':18} {'model':22} {'type':8} {'M3b':5} {'points':>6} {'in':>7} {'out':>7} "
+               f"{'cost $':>8} {'secs':>6}")
+    for r in runs:
+        cost = f"{r.cost_usd:.4f}" if r.cost_usd is not None else "?"
+        typer.echo(f"{r.video_id[:18]:18} {r.model:22} {r.actual:8} {'PASS' if r.passed else 'FAIL':5} "
+                   f"{r.points:>6} {r.input_tokens:>7} {r.output_tokens:>7} {cost:>8} {r.seconds:>6}")
+        for p in r.problems[:3]:
+            typer.echo(f"    - {p}")
+    typer.echo(f"\nSummaries to read side by side: {save_root}/<model>/<video>/summary.md")
+
+
 @app.command()
 def serve(
     host: str = typer.Option("127.0.0.1"),

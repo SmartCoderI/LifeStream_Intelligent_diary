@@ -18,6 +18,25 @@ class LLMError(Exception):
     pass
 
 
+# Models that accept the server-side refusal fallback (`fallbacks: "default"`).
+SERVER_FALLBACK_MODELS = {"claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5",
+                          "claude-sonnet-5-5"}
+
+# $ per million tokens (input, output), Anthropic API list prices. Haiku 5.5: prompts up to 100K tokens.
+PRICES = {
+    "claude-opus-5-5": (4.00, 20.00),
+    "claude-sonnet-5-5": (2.00, 10.00),
+    "claude-haiku-5-5": (0.10, 0.50),
+}
+
+
+def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    if model not in PRICES:
+        return None
+    price_in, price_out = PRICES[model]
+    return (input_tokens * price_in + output_tokens * price_out) / 1_000_000
+
+
 class LLMClient(Protocol):
     def parse(
         self,
@@ -47,6 +66,11 @@ class AnthropicLLM:
     def parse(self, *, system: str, content: list[dict], schema: type[T], max_tokens: int, effort: str) -> T:
         import anthropic
 
+        # If the request is declined by a safety classifier, the API retries it on a fallback
+        # model inside the same call. Haiku has no server-side fallback, so it's only sent
+        # for the models that support it.
+        fallback = ({"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
+                    if self.model in SERVER_FALLBACK_MODELS else {})
         try:
             response = self.client.beta.messages.parse(
                 model=self.model,
@@ -55,10 +79,7 @@ class AnthropicLLM:
                 messages=[{"role": "user", "content": content}],
                 output_format=schema,
                 output_config={"effort": effort},
-                # If the request is declined by a safety classifier, the API
-                # retries it on a fallback model inside the same call.
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
+                **fallback,
             )
         except anthropic.AuthenticationError as e:
             raise LLMError("ANTHROPIC_API_KEY is missing or invalid. Put it in .env") from e

@@ -18,7 +18,7 @@ output "image" {
 }
 
 output "compute_environment" {
-  value = aws_batch_compute_environment.gpu.name
+  value = local.queue_compute_environment.name
 }
 
 output "job_queue" {

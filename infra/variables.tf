@@ -34,6 +34,12 @@ variable "instance_types" {
   default     = ["g4dn.xlarge"]
 }
 
+variable "use_spot" {
+  description = "Run jobs on Spot GPU instances (typically 60-70% cheaper; can be reclaimed, then retried). Needs the Spot G and VT quota."
+  type        = bool
+  default     = false
+}
+
 variable "max_vcpus" {
   description = "Most vCPUs running at once (4 = one g4dn.xlarge). Must fit the 'Running On-Demand G and VT instances' quota."
   type        = number
@@ -50,6 +56,12 @@ variable "image_tag" {
   description = "Worker image tag in ECR that the job definition runs (tags are immutable: push a new tag per build)."
   type        = string
   default     = "v1"
+}
+
+variable "llm_model" {
+  description = "Claude model for classification and summaries in Batch jobs (e.g. claude-sonnet-5-5 or claude-haiku-5-5 to cut cost)."
+  type        = string
+  default     = "claude-opus-5-5"
 }
 
 variable "job_vcpus" {

@@ -71,6 +71,46 @@ resource "aws_batch_compute_environment" "gpu" {
   }
 }
 
+# Spot: the same GPU instances at typically 60-70% less, but AWS can reclaim them (the job is
+# then retried, see retry_strategy). Needs the "All G and VT Spot Instance Requests" quota.
+# Switch with: terraform apply -var use_spot=true
+resource "aws_batch_compute_environment" "gpu_spot" {
+  count = var.use_spot ? 1 : 0
+  name  = "${var.project}-gpu-spot"
+  type  = "MANAGED"
+
+  compute_resources {
+    type                = "SPOT"
+    allocation_strategy = "SPOT_PRICE_CAPACITY_OPTIMIZED" # lowest price among pools unlikely to be reclaimed
+    min_vcpus           = 0
+    desired_vcpus       = 0
+    max_vcpus           = var.max_vcpus
+    instance_type       = var.instance_types
+    instance_role       = aws_iam_instance_profile.instance.arn
+    subnets             = local.subnet_ids
+    security_group_ids  = [aws_security_group.batch.id]
+
+    launch_template {
+      launch_template_id = aws_launch_template.batch.id
+      version            = aws_launch_template.batch.latest_version
+    }
+
+    ec2_configuration {
+      image_type = "ECS_AL2023_NVIDIA"
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [compute_resources[0].desired_vcpus]
+  }
+}
+
+locals {
+  # The queue uses one environment. Spot jobs don't fall back to on-demand: Batch would keep them
+  # waiting on Spot capacity rather than move them, so it's one or the other.
+  queue_compute_environment = var.use_spot ? aws_batch_compute_environment.gpu_spot[0] : aws_batch_compute_environment.gpu
+}
+
 resource "aws_batch_job_queue" "gpu" {
   name     = "${var.project}-gpu"
   state    = "ENABLED"
@@ -78,7 +118,7 @@ resource "aws_batch_job_queue" "gpu" {
 
   compute_environment_order {
     order               = 1
-    compute_environment = aws_batch_compute_environment.gpu.arn
+    compute_environment = local.queue_compute_environment.arn
   }
 }
 
@@ -94,8 +134,18 @@ resource "aws_batch_job_definition" "worker" {
     date   = "today"
   }
 
+  # Retry only when AWS took the instance away (Spot reclaim, host failure); a job that fails on
+  # its own (bad video, code error) isn't retried, so it can't burn GPU time three times.
   retry_strategy {
-    attempts = 1
+    attempts = 3
+    evaluate_on_exit {
+      on_status_reason = "Host EC2*"
+      action           = "RETRY"
+    }
+    evaluate_on_exit {
+      on_reason = "*"
+      action    = "EXIT"
+    }
   }
 
   timeout {
@@ -115,6 +165,7 @@ resource "aws_batch_job_definition" "worker" {
     ]
     environment = [
       { name = "AWS_DEFAULT_REGION", value = var.region },
+      { name = "LLM_MODEL", value = var.llm_model },
     ]
     secrets = [
       { name = "ANTHROPIC_API_KEY", valueFrom = local.anthropic_param_arn },
