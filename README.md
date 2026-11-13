@@ -173,6 +173,22 @@ answer generation.
   simple step → seconds form.
 - `lifestream ask` prints its timing too.
 
+Each run's wall-clock time is split by kind of work: Upload & transfers, Cold start & queue,
+FFmpeg & scenes, Model loading, Transcription (WhisperX), Speakers (pyannote), LLM (Claude),
+Embedding, Database, and Other steps & waits (building the script, Markdown, waiting for the server
+to notice a finished cloud job). The steps run one after another (WhisperX, then pyannote), except
+scene detection, which runs in a separate process alongside them: it only counts where nothing else
+was running, and the page says how much of it was hidden.
+
+Cloud runs (Stage 3) are recorded by the dashboard server when a job finishes or fails: the browser
+upload, **cold start** (waiting for a GPU machine, boot, image pull, container start; from times the
+worker reads in its own container), the worker's steps, S3 transfers, and indexing on the server.
+The Latency page shows cloud and local runs separately (they aren't comparable). For cloud runs it
+also shows the Stage 3 time budget (targets for a 1-hour video) with each budget line's median, and
+checks the latest ~1-hour run against it (M3a: upload → done under 20 minutes). The budget lines
+group the same timeline the way the spec does: model loading counts toward its step, and
+"classification + summary + embeddings" is Claude plus indexing.
+
 ## Search and speaker names (Stage 2)
 
 The search database runs in Docker (`./dev.sh` starts it, or `docker compose up -d db`).

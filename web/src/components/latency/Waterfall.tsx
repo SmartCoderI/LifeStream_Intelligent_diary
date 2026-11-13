@@ -1,12 +1,8 @@
 import { useState } from "react";
 import type { Category, Span } from "../../lib/api";
-import { CATEGORY_ORDER } from "../../lib/categories";
+import { CATEGORY_LABELS, CATEGORY_ORDER } from "../../lib/categories";
 import { clockTime, compactNumber, duration } from "../../lib/format";
 
-const CATEGORY_LABELS: Record<Category, string> = {
-  speech: "Speech models", llm: "LLM", model_loading: "Model loading", media: "Media (FFmpeg)",
-  embedding: "Embedding", database: "Database", upload_queue: "Upload & queue", other: "Other",
-};
 const cat = (s: Span): Category => s.category ?? "other";
 
 /** Parents first (by start time), each followed by its sub-steps. */

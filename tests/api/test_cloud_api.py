@@ -203,3 +203,37 @@ def test_delete_removes_the_s3_files(app, client, s3, tmp_path, format_samples):
 def test_unfinished_upload_can_be_deleted(client):
     new_upload(client)
     assert client.delete("/api/videos/team-sync").status_code == 204
+
+
+# ---------- latency of cloud uploads ----------
+
+def test_live_timing_while_uploading_and_waiting_for_a_gpu(client):
+    new_upload(client)
+    timeline = client.get("/api/videos/team-sync/timeline").json()
+    (upload,) = timeline["spans"]
+    assert upload["name"] == "upload" and upload["running"] and upload["category"] == "transfer"
+    client.post("/api/videos/team-sync/uploaded")
+    timeline = client.get("/api/videos/team-sync/timeline").json()
+    assert [(s["name"], s["category"], bool(s.get("running"))) for s in timeline["spans"]] == [
+        ("upload", "transfer", False), ("gpu_start", "cold_start", True)]
+
+
+def test_a_cloud_upload_is_recorded_on_the_latency_page(app, client, s3, tmp_path, format_samples):
+    new_upload(client)
+    client.post("/api/videos/team-sync/uploaded")
+    finish_processing(app, s3, tmp_path, format_samples)
+
+    (run,) = client.get("/api/latency/runs").json()
+    assert run["video_id"] == "team-sync" and run["status"] == "done" and run["source"] == "cloud"
+    stages = {s["name"]: s["category"] for s in run["spans"] if not s["parent"]}
+    assert stages["upload"] == "transfer" and stages["gpu_start"] == "cold_start"
+    assert stages["results_download"] == "transfer" and stages["index"] == "embedding"
+    assert run["stats"]["environment"] == "cloud" and run["stats"]["cold_start"] is not None
+
+    summary = client.get("/api/latency/summary").json()
+    assert summary["environment"] == "cloud" and summary["environments"] == {"cloud": 1, "local": 0}
+    assert summary["runs"] == 1 and summary["cold_start_median"] is not None
+    assert [t["target"] for t in summary["budget_lines"]] == ["≤ 6 min", "< 1 min", "4–8 min", "2–4 min", "~2 min"]
+
+    timeline = client.get("/api/videos/team-sync/timeline").json()  # the video page's Timing tab
+    assert timeline["status"] == "done" and timeline["stats"]["environment"] == "cloud"

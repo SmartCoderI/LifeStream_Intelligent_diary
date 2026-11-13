@@ -108,6 +108,46 @@ class StatusReporter:
             print(f"Couldn't save status to s3://{self.bucket}/{self.key}: {e}", flush=True)
 
 
+def _iso(value: str | None) -> float | None:
+    """ECS metadata timestamps ('2026-11-13T05:04:37.961234567Z') -> epoch seconds."""
+    if not value:
+        return None
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def startup_times(proc_uptime: Path = Path("/proc/uptime"), metadata_uri: str | None = None,
+                  fetch: Callable[[str], dict] | None = None) -> dict:
+    """When this job's machine booted and its image was pulled, for the GPU-start breakdown on the
+    Latency page. Uses only what the container can see itself: the host's uptime (not namespaced
+    in Docker) and the ECS task metadata endpoint. Missing values are simply left out."""
+    times: dict[str, float] = {}
+    try:
+        times["host_booted_at"] = round(time.time() - float(proc_uptime.read_text().split()[0]), 3)
+    except (OSError, ValueError, IndexError):
+        pass
+    uri = metadata_uri if metadata_uri is not None else os.environ.get("ECS_CONTAINER_METADATA_URI_V4")
+    if uri:
+        if fetch is None:
+            import urllib.request
+
+            def fetch(url: str) -> dict:
+                with urllib.request.urlopen(url, timeout=2) as response:  # noqa: S310 - local ECS endpoint
+                    return json.loads(response.read())
+        try:
+            task, container = fetch(f"{uri}/task"), fetch(uri)
+            for key, field in (("PullStartedAt", "pull_started_at"), ("PullStoppedAt", "pull_stopped_at")):
+                if (value := _iso(task.get(key))) is not None:
+                    times[field] = value
+            if (value := _iso(container.get("StartedAt"))) is not None:
+                times["container_started_at"] = value
+        except Exception:  # noqa: BLE001 - informational only
+            pass
+    return times
+
+
 def gpu_name() -> str | None:
     try:
         import torch
@@ -150,7 +190,7 @@ def run_job(
     prefix = f"{out_prefix.rstrip('/')}/{vid}/" if out_prefix.strip("/") else f"{vid}/"
     status = StatusReporter(s3, out_bucket, prefix + STATUS_FILE, video_id=vid, date=date, input=input_uri,
                             job_id=os.environ.get("AWS_BATCH_JOB_ID"),
-                            job_attempt=os.environ.get("AWS_BATCH_JOB_ATTEMPT"))
+                            job_attempt=os.environ.get("AWS_BATCH_JOB_ATTEMPT"), **startup_times())
     work = Path(work_dir or tempfile.mkdtemp(prefix="lifestream-"))
     local_video = work / "in" / Path(in_key).name
     local_video.parent.mkdir(parents=True, exist_ok=True)
@@ -174,6 +214,13 @@ def run_job(
             s3.upload_file(str(path), out_bucket, prefix + path.relative_to(folder).as_posix())
         t3 = time.time()
     except Exception as e:
+        # keep the timeline up to the failure, so the Latency page shows where it stopped
+        partial = work / "out" / vid / "timeline.json"
+        if partial.exists():
+            try:
+                s3.upload_file(str(partial), out_bucket, prefix + "timeline.json")
+            except Exception as upload_error:  # noqa: BLE001
+                print(f"Couldn't save the partial timeline: {upload_error}", flush=True)
         status.finish("failed", str(e) or type(e).__name__)
         raise
 

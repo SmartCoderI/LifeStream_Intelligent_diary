@@ -12,6 +12,7 @@ so every other dashboard feature works exactly as it does locally.
 
 from __future__ import annotations
 
+import inspect
 import json
 import threading
 import time
@@ -20,9 +21,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from ..api.jobs import STEP_PROGRESS, read_status, write_status
+from ..api.jobs import STEP_LABELS, STEP_PROGRESS, read_status, write_status
 from ..config import Settings
-from ..timing import append_log
+from ..timing import STEP_CATEGORIES, append_log
 from .worker import STATUS_FILE
 
 ACTIVE = ("queued", "processing")
@@ -113,6 +114,9 @@ class CloudStore:
         for i in range(0, len(keys), 1000):
             self.s3.delete_objects(Bucket=self.bucket,
                                    Delete={"Objects": [{"Key": k} for k in keys[i:i + 1000]], "Quiet": True})
+
+    def download_file(self, key: str, dest: Path) -> None:
+        self.s3.download_file(self.bucket, key, str(dest))
 
     def clear_worker_status(self, video_id: str) -> None:
         self.s3.delete_object(Bucket=self.bucket, Key=f"out/{video_id}/{STATUS_FILE}")
@@ -227,7 +231,9 @@ class CloudSync:
                              step_timings=remote.get("step_timings", {}), job_id=remote.get("job_id"),
                              error=None)
             elif state == "failed":
-                write_status(folder, status="failed", step="failed", error=remote.get("error") or "Processing failed",
+                error = remote.get("error") or "Processing failed"
+                self.record_failure(folder, local, remote, error)
+                write_status(folder, status="failed", step="failed", error=error,
                              finished_at=remote.get("finished_at"), step_timings=remote.get("step_timings", {}))
             elif state == "done":
                 self.finish(folder, local, remote)
@@ -245,8 +251,10 @@ class CloudSync:
                          queued_at=local.get("queued_at") or finished)
         job = batch_jobs().get(self.store.uri(local["s3_key"]))
         if job and job["status"] == "FAILED":
+            error = f"The GPU job failed before processing started: {job['reason'] or 'unknown reason'}"
+            self.record_failure(folder, read_status(folder), None, error)
             write_status(folder, status="failed", step="failed", job_id=job["job_id"], finished_at=time.time(),
-                         error=f"The GPU job failed before processing started: {job['reason'] or 'unknown reason'}")
+                         error=error)
         elif job and job["status"] == "SUCCEEDED":  # finished without ever writing status.json
             write_status(folder, status="failed", step="failed", job_id=job["job_id"], finished_at=time.time(),
                          error="The GPU job finished without reporting progress. Is the worker image "
@@ -258,35 +266,58 @@ class CloudSync:
         """Worker done: download results, rebuild the diary, index for search, record the run."""
         from ..memory.store import MemoryConfigError, MemoryUnavailable
         from ..pipeline import render_outputs
+        from ..timing import Timings
 
         vid = folder.name
         step_timings = dict(remote.get("step_timings") or {})
         write_status(folder, status="processing", step="indexing", progress=STEP_PROGRESS["indexing"],
                      step_started_at=time.time(), step_timings=step_timings)
+        server = Timings()  # what happens on this server, added to the worker's timeline
         try:
-            self.store.download_results(vid, folder)
-            render_outputs(self.out_root, vid, self.settings)
+            with server.step("results_download", "Download results to the dashboard server", kind="io"):
+                self.store.download_results(vid, folder)
+            with server.step("render", "Rebuild the daily diary"):
+                render_outputs(self.out_root, vid, self.settings)
         except Exception as e:  # noqa: BLE001
             write_status(folder, status="failed", step="failed", finished_at=time.time(),
                          error=f"Couldn't load the results from S3: {e}")
             return
-        t0 = time.time()
         index_error = None
         try:
-            self.index_fn(folder, self.settings)
+            with server.step("index", "Add to search (dashboard server)") as span:
+                kwargs = {"timings": server} if "timings" in inspect.signature(self.index_fn).parameters else {}
+                span["meta"]["chunks"] = self.index_fn(folder, self.settings, **kwargs)
         except (MemoryUnavailable, MemoryConfigError) as e:
             index_error = str(e)  # the diary is complete; search can be rebuilt with `lifestream index`
-        t1 = time.time()
-        step_timings["indexing"] = round(t1 - t0, 2)
-        self._record_run(folder, local, remote, t0, t1, index_error)
-        write_status(folder, status="done", step="done", progress=100, finished_at=t1,
+        index = next(s for s in server.spans if s["name"] == "index")
+        if index_error:
+            index["meta"]["error"] = index_error
+        step_timings["indexing"] = round(index["duration"], 2)
+        self._record_run(folder, local, remote, server.spans)
+        write_status(folder, status="done", step="done", progress=100, finished_at=index["end"],
                      step_timings=step_timings, index_error=index_error, error=None)
         self.log(f"[{vid}] done ({len(step_timings)} steps)")
 
-    def _record_run(self, folder: Path, local: dict, remote: dict, t0: float, t1: float,
-                    index_error: str | None) -> None:
-        """The worker's timeline plus what happened around it: browser upload, waiting for a GPU
-        machine (cold start), and indexing on this server. Saved and added to the run history."""
+    def record_failure(self, folder: Path, local: dict, remote: dict | None, error: str) -> None:
+        """A failed cloud run still goes into the run history: upload, GPU start, and the worker's
+        steps up to the failure (its partial timeline.json, if it got that far)."""
+        try:
+            self.store.download_file(f"out/{folder.name}/timeline.json", folder / "timeline.json")
+        except Exception:  # noqa: BLE001 - failed before the pipeline started: no worker timeline
+            (folder / "timeline.json").unlink(missing_ok=True)
+        remote = dict(remote or {})
+        if not remote.get("started_at"):  # never started: GPU start lasted until now
+            remote["started_at"] = time.time()
+        self._record_run(folder, local, remote, [], status="failed", error=error)
+
+    def _record_run(self, folder: Path, local: dict, remote: dict, server_spans: list[dict],
+                    status: str = "done", error: str | None = None) -> None:
+        """The worker's timeline plus what happened around it, saved and added to the run history:
+
+            upload (browser -> S3) -> GPU start (wait for a machine, boot, image pull, container start)
+            -> [worker: S3 download, processing steps] -> S3 upload of results
+            -> download to this server, diary, indexing
+        """
         from ..pipeline import runs_log_path
 
         path = folder / "timeline.json"
@@ -294,23 +325,88 @@ class CloudSync:
             timeline = json.loads(path.read_text())
         except (FileNotFoundError, json.JSONDecodeError):
             timeline = {"video_id": folder.name, "spans": []}
-        spans = [s for s in timeline.get("spans", []) if s.get("name") not in ("upload", "queue", "index")]
+        ours = {"upload", "s3_upload_results"} | {s["name"] for s in server_spans}
+        spans = [s for s in timeline.get("spans", [])
+                 if s.get("name") not in ours and s.get("name", "").split(".")[0] != "gpu_start"]
         started, uploaded, worker_start = (local.get("upload_started_at"), local.get("uploaded_at"),
                                            remote.get("started_at"))
         if started and uploaded and uploaded >= started:
             spans.append(_span("upload", "Upload (browser to S3)", started, uploaded,
                                {"bytes": local.get("size_bytes")}))
         if uploaded and worker_start and worker_start >= uploaded:
-            spans.append(_span("queue", "Waiting for a GPU machine (Batch start + image pull)",
-                               uploaded, worker_start, {"job_id": remote.get("job_id")}))
-        spans.append({**_span("index", "Add to search (dashboard server)", t0, t1,
-                              {"error": index_error} if index_error else {}), "kind": "step"})
+            spans += gpu_start_spans(uploaded, worker_start, remote)
+        pipeline_end, worker_end = timeline.get("finished_at"), remote.get("finished_at")
+        if status == "done" and pipeline_end and worker_end and worker_end >= pipeline_end:
+            spans.append(_span("s3_upload_results", "Upload results to S3", pipeline_end, worker_end))
+        if status == "done" and worker_end and server_spans and server_spans[0]["start"] > worker_end:
+            spans.append({**_span("pickup", "Waiting for the server to notice (it checks every 5 s)",
+                                  worker_end, server_spans[0]["start"]), "kind": "step"})
+        spans += server_spans
+        if not spans:
+            return
         spans.sort(key=lambda s: s["start"])
         start = min(s["start"] for s in spans)
-        timeline.update(spans=spans, status="done", error=None, started_at=start, finished_at=t1,
-                        total=round(t1 - start, 3), source="cloud")
+        end = max([s["end"] for s in spans] + ([worker_end] if status == "failed" and worker_end else []))
+        timeline.update(spans=spans, status=status, error=error, started_at=start, finished_at=end,
+                        total=round(end - start, 3), source="cloud", video_id=folder.name)
+        timeline.setdefault("file", local.get("original_name"))
         path.write_text(json.dumps(timeline, indent=2))
         append_log(runs_log_path(self.out_root), timeline)
+
+
+def gpu_start_spans(uploaded: float, worker_start: float, remote: dict) -> list[dict]:
+    """Upload finished -> worker running, split by the times the worker reported (startup_times).
+
+    Cold (a new machine booted after the upload): wait for a machine -> boot and join Batch
+    -> image pull -> container start. Warm (the machine was already up): wait in the queue
+    -> image pull (usually instant, cached) -> container start."""
+    booted = remote.get("host_booted_at")
+    cold = booted is not None and booted > uploaded
+    marks = [("gpu_start.wait", "Waiting for a GPU machine (Batch + EC2 launch)" if cold
+              else "Waiting in the Batch queue (machine already running)", uploaded)]
+    if cold:
+        marks.append(("gpu_start.boot", "Machine boot + join the Batch cluster", booted))
+    marks += [("gpu_start.pull", "Pull the worker image", remote.get("pull_started_at")),
+              ("gpu_start.container", "Start the container", remote.get("pull_stopped_at"))]
+    # keep the reported times, in order, inside [uploaded, worker_start]
+    points, last = [], uploaded
+    for name, label, at in marks:
+        if at is None:
+            continue
+        at = min(max(at, last), worker_start)
+        points.append((name, label, at))
+        last = at
+    children = []
+    for i, (name, label, at) in enumerate(points):
+        end = points[i + 1][2] if i + 1 < len(points) else worker_start
+        if end > at:
+            children.append({**_span(name, label, at, end), "parent": "gpu_start"})
+    parent = _span("gpu_start", "GPU start" + (" (cold: new machine)" if cold else ""), uploaded, worker_start,
+                   {"cold": cold if booted is not None else None, "job_id": remote.get("job_id")})
+    return [parent] + (children if len(children) > 1 else [])
+
+
+def live_spans(status: dict, now: float) -> list[dict]:
+    """Spans before the worker's timeline exists (the video's Timing tab while it waits):
+    the browser upload, then the GPU start, each still running if it hasn't finished."""
+    spans = []
+    started, uploaded = status.get("upload_started_at"), status.get("uploaded_at")
+    if started:
+        spans.append({**_span("upload", "Upload (browser to S3)", started, uploaded or now,
+                              {"bytes": status.get("size_bytes")}), "running": not uploaded})
+    if uploaded:
+        worker = status.get("started_at")
+        spans.append({**_span("gpu_start", "GPU start", uploaded, worker or now,
+                              {"job_id": status.get("job_id")}), "running": not worker})
+        # finished worker steps, one after another (the worker reports seconds per step)
+        cursor = worker
+        for step in STEP_PROGRESS:
+            seconds = (status.get("step_timings") or {}).get(step)
+            if cursor and seconds is not None and step != "indexing":
+                spans.append({**_span(f"step.{step}", STEP_LABELS.get(step, step), cursor, cursor + seconds),
+                              "kind": "step", "category": STEP_CATEGORIES.get(step, "other")})
+                cursor += seconds
+    return spans
 
 
 def _span(name: str, label: str, start: float, end: float, meta: dict | None = None) -> dict:

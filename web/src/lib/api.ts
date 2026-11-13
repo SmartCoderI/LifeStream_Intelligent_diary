@@ -68,11 +68,23 @@ export interface AnswerResult {
 
 // ---------- latency ----------
 export type SpanKind = "io" | "step" | "load" | "llm" | "cached" | "running";
+/** Kind of work; a run's or query's categories add up to its wall-clock time. */
 export type Category =
-  "speech" | "llm" | "model_loading" | "media" | "embedding" | "database" | "upload_queue" | "other";
+  "transfer" | "cold_start" | "media" | "model_loading" | "transcription" | "speakers" | "llm" | "embedding"
+  | "database" | "other";
+export type Environment = "cloud" | "local";
 export interface BreakdownItem {
   category: Category; label: string; seconds: number; share: number; per_video_minute?: number | null;
+  /** across runs: median seconds per run */
+  median?: number | null;
 }
+/** A line of the Stage 3 time budget (targets are for a 1-hour video on the cloud GPU). */
+export interface BudgetRow { line: string; label: string; seconds: number; target: string; within: boolean }
+export interface BudgetLine { line: string; label: string; target: string; median: number | null }
+/** a step that ran alongside others: its full duration and how much of it was hidden */
+export interface ParallelWork { label: string; duration: number; hidden: number }
+/** a cloud run of a ~1-hour video checked against the Stage 3 time budget (M3a) */
+export interface BudgetCheck { rows: BudgetRow[]; total: number; total_target: string; passed: boolean; video_duration: number }
 export interface Span {
   name: string; label: string; kind: SpanKind; parent: string | null; category?: Category;
   start: number; end: number; duration: number;  // epoch seconds; duration in seconds
@@ -83,12 +95,22 @@ export interface RunStats {
   llm_seconds: number; input_tokens: number; output_tokens: number;
   slowest: { label: string; duration: number } | null; cached_steps: string[]; speed: number | null;
   breakdown: BreakdownItem[]; bottleneck: BreakdownItem | null; config: RunConfig | null;
+  /** cloud: AWS GPU worker; local: this computer */
+  environment?: Environment;
+  /** waiting before processing: cloud GPU machine + image, or the queue on this computer */
+  cold_start?: number | null;
+  cold?: boolean | null;
+  budget?: BudgetCheck | null;
+  parallel?: ParallelWork[];
 }
 export interface RunConfig {
   device?: string; whisper_model?: string; compute_type?: string; diarization_device?: string;
   llm_model?: string | null; embed_model?: string;
 }
 export interface LatencySummary {
+  /** run numbers cover one environment; queries cover all */
+  environment?: Environment; environments?: Record<Environment, number>; cold_start_median?: number | null;
+  budget?: BudgetCheck | null; budget_lines?: BudgetLine[] | null;
   runs: number; runs_skipped: number; config: RunConfig | null;
   speed_median: number | null; total_median: number | null;
   breakdown: BreakdownItem[]; bottleneck: BreakdownItem | null; llm_share: number;
@@ -111,9 +133,6 @@ export interface QueryRecord {
   found: boolean | null; citations: number; total: number; spans: Span[]; stats: RunStats;
 }
 export interface SearchStatus { available: boolean; videos: number; chunks: number; error: string | null }
-
-export interface DayItem { date: string; video_count: number }
-export interface DayDetail { date: string; videos: (VideoItem & { summary: VideoSummary })[]; markdown: string | null }
 
 /** Cloud mode (Stage 3): uploads go straight to S3 and processing runs on a cloud GPU. */
 export interface AppConfig { mode: "local" | "cloud"; auth: boolean }
@@ -198,11 +217,10 @@ export const api = {
   getTimeline: (id: string) => get<Timeline>(`/api/videos/${id}/timeline`),
   latencyRuns: (limit = 50) => get<RunRecord[]>(`/api/latency/runs?limit=${limit}`),
   latencyQueries: (limit = 50) => get<QueryRecord[]>(`/api/latency/queries?limit=${limit}`),
-  latencySummary: (limit = 20) => get<LatencySummary>(`/api/latency/summary?limit=${limit}`),
+  latencySummary: (limit = 20, environment?: Environment | null) =>
+    get<LatencySummary>(`/api/latency/summary?limit=${limit}${environment ? `&environment=${environment}` : ""}`),
 
   ask: (question: string) => send<AnswerResult>("POST", "/api/query", { question }),
-  listDays: () => get<DayItem[]>("/api/days"),
-  getDay: (date: string) => get<DayDetail>(`/api/days/${date}`),
 
   setSpeakers: (id: string, names: Record<string, string>) =>
     send<{ speakers: SpeakerStat[]; indexed: boolean; index_error: string | null }>(

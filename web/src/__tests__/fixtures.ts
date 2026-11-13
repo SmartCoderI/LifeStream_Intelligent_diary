@@ -1,4 +1,4 @@
-import type { AnswerResult, BreakdownItem, DayDetail, DayItem, VideoSummary, LatencySummary, QueryRecord, RunRecord, Span, Timeline, VideoDetail, VideoItem } from "../lib/api";
+import type { AnswerResult, BreakdownItem, LatencySummary, QueryRecord, RunRecord, Span, Timeline, VideoDetail, VideoItem } from "../lib/api";
 
 const now = Date.now() / 1000;
 
@@ -82,8 +82,8 @@ export const answer: AnswerResult = {
 
 const T = 1_800_000_000; // a fixed epoch second
 const CATS: Record<string, Span["category"]> = {
-  upload: "upload_queue", queue: "upload_queue", transcribe: "speech", "transcribe.load_model": "model_loading",
-  visual: "media", classify: "llm", summarize: "llm", diarize: "speech", "running.transcribing": "speech",
+  upload: "transfer", queue: "cold_start", transcribe: "transcription", "transcribe.load_model": "model_loading",
+  visual: "media", classify: "llm", summarize: "llm", diarize: "speakers", "running.transcribing": "transcription",
   parse: "other", search: "other", answer: "llm",
 };
 const span = (name: string, label: string, kind: Span["kind"], start: number, end: number,
@@ -93,9 +93,9 @@ const span = (name: string, label: string, kind: Span["kind"], start: number, en
 });
 const bd = (category: BreakdownItem["category"], label: string, seconds: number, share: number,
             per_video_minute?: number): BreakdownItem => ({ category, label, seconds, share, per_video_minute });
-const runBreakdown = [bd("speech", "Speech models", 50, 0.417), bd("llm", "LLM", 30, 0.25),
-  bd("model_loading", "Model loading", 10, 0.083), bd("upload_queue", "Upload & queue", 5, 0.042),
-  bd("other", "Other", 25, 0.208)];
+const runBreakdown = [bd("transcription", "Transcription (WhisperX)", 50, 0.417), bd("llm", "LLM (Claude)", 30, 0.25),
+  bd("model_loading", "Model loading", 10, 0.083), bd("transfer", "Upload & transfers", 3, 0.025),
+  bd("cold_start", "Cold start & queue", 2, 0.017), bd("other", "Other steps & waits", 25, 0.208)];
 const config = { device: "cpu", whisper_model: "medium.en", compute_type: "int8", llm_model: "claude-opus-5-5" };
 
 export const doneTimeline: Timeline = {
@@ -145,39 +145,52 @@ export const queries: QueryRecord[] = [{
 }];
 
 export const latencySummary: LatencySummary = {
+  environment: "local", environments: { cloud: 0, local: 3 }, cold_start_median: null, budget: null, budget_lines: null,
   runs: 3, runs_skipped: 1, config, speed_median: 2.35, total_median: 171,
-  breakdown: [bd("speech", "Speech models", 300, 0.55, 76.1), bd("llm", "LLM", 109, 0.2, 27.6),
-              bd("model_loading", "Model loading", 44, 0.08, 11.2), bd("other", "Other", 92, 0.17, 23.3)],
-  bottleneck: bd("speech", "Speech models", 300, 0.55, 76.1), llm_share: 0.2,
+  breakdown: [bd("transcription", "Transcription (WhisperX)", 300, 0.55, 76.1), bd("llm", "LLM (Claude)", 109, 0.2, 27.6),
+              bd("model_loading", "Model loading", 44, 0.08, 11.2), bd("other", "Other steps & waits", 92, 0.17, 23.3)],
+  bottleneck: bd("transcription", "Transcription (WhisperX)", 300, 0.55, 76.1), llm_share: 0.2,
   queries: { count: 12, p50: 2.9, p95: 4.1, llm_p50: 2.7, database_p50: 0.04, embedding_p50: 0.15,
              breakdown: [bd("llm", "LLM", 30, 0.93)] },
 };
 
-// ---------- diary ----------
-export const vlogSummary: VideoSummary = {
-  video_id: "travel-vlog", date: "2026-11-04", duration: 624,
-  classification: { type: "vlog", confidence: "high", reason: "one person, many places" },
-  meeting: null,
-  vlog: {
-    title: "Morning at the farmers market",
-    overview: "Walked through the market and bought peaches.",
-    location: { value: "Berkeley", source: "inferred" },
-    activities: [
-      { time: "00:01:10", description: "Tasted peaches at the first stall" },
-      { time: "00:06:40", description: "Coffee with a friend" },
-    ],
-    action_items: [{ owner: null, task: "Make peach jam" }],
-  },
+// ---------- cloud runs (Stage 3) ----------
+const cloudConfig = { device: "cuda", whisper_model: "large-v3", compute_type: "float16", llm_model: "claude-opus-5-5" };
+
+const lines = [
+  { line: "cold_start", label: "Cold start (instance + image)", target: "≤ 6 min", median: 452 },
+  { line: "ffmpeg", label: "FFmpeg", target: "< 1 min", median: 2 },
+  { line: "whisperx", label: "WhisperX large-v3", target: "4–8 min", median: 150 },
+  { line: "pyannote", label: "pyannote (alongside scene detection)", target: "2–4 min", median: 40 },
+  { line: "summary", label: "Classification + summary + embeddings", target: "~2 min", median: 55 },
+];
+
+export const cloudSummary: LatencySummary = {
+  ...latencySummary, environment: "cloud", environments: { cloud: 2, local: 3 }, runs: 2, runs_skipped: 0,
+  config: cloudConfig, speed_median: 0.21, total_median: 1020, cold_start_median: 452,
+  breakdown: [{ ...bd("cold_start", "Cold start & queue", 904, 0.44, 37.7), median: 452 },
+              { ...bd("transcription", "Transcription (WhisperX)", 300, 0.3, 25), median: 150 },
+              { ...bd("llm", "LLM (Claude)", 90, 0.04, 7.5), median: 45 },
+              { ...bd("database", "Database", 2, 0.001, 0.2), median: 1 },
+              { ...bd("transfer", "Upload & transfers", 12, 0.01, 1), median: 6 }],
+  bottleneck: bd("cold_start", "Cold start & queue", 904, 0.44, 37.7),
+  budget: null, budget_lines: lines,
 };
 
-export const days: DayItem[] = [{ date: "2026-11-04", video_count: 2 }, { date: "2026-11-02", video_count: 1 }];
+export const cloudSummaryWithBudget: LatencySummary = {
+  ...cloudSummary,
+  budget: { total: 1140, total_target: "< 20 min", passed: true, video_duration: 3600, rows: [
+    { line: "cold_start", label: "Cold start (instance + image)", seconds: 452, target: "≤ 6 min", within: false },
+    { line: "ffmpeg", label: "FFmpeg", seconds: 40, target: "< 1 min", within: true },
+    { line: "whisperx", label: "WhisperX large-v3", seconds: 420, target: "4–8 min", within: true },
+    { line: "pyannote", label: "pyannote (alongside scene detection)", seconds: 150, target: "2–4 min", within: true },
+    { line: "summary", label: "Classification + summary + embeddings", seconds: 70, target: "~2 min", within: true },
+  ] },
+};
 
-export const day: DayDetail = {
-  date: "2026-11-04",
-  videos: [
-    { ...doneVideo, summary: meetingDetail.summary! },
-    { ...doneVideo, video_id: "travel-vlog", title: "Morning at the farmers market", type: "vlog", thumbnail: null,
-      summary: vlogSummary },
-  ],
-  markdown: "# Wednesday, November 4",
+export const cloudRun: RunRecord = {
+  ...runs[0], run_id: "c1", title: "Databricks interview", source: "cloud",
+  stats: { ...runs[0].stats, config: cloudConfig, environment: "cloud", cold_start: 452, cold: true, total: 1020,
+           breakdown: cloudSummary.breakdown,
+           parallel: [{ label: "Scene detection + keyframes (parallel)", duration: 60.3, hidden: 60.3 }] },
 };

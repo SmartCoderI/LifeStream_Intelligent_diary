@@ -79,7 +79,7 @@ def test_logs_newest_first_and_skip_bad_lines(tmp_path):
 
 
 # ---------------- breakdown + aggregate ----------------
-from lifestream.timing import aggregate, breakdown, category_of  # noqa: E402
+from lifestream.timing import aggregate, breakdown, budget_line_of, category_of  # noqa: E402
 
 
 def sp(name, kind, start, end, parent=None, **meta):
@@ -92,15 +92,33 @@ def as_dict(items):
 
 
 def test_categories():
-    assert category_of(sp("upload", "io", 0, 1)) == "upload_queue"
+    assert category_of(sp("upload", "io", 0, 1)) == "transfer"
+    for name in ("s3_download", "s3_upload_results", "results_download"):
+        assert category_of(sp(name, "io", 0, 1)) == "transfer"
+    assert category_of(sp("gpu_start", "io", 0, 1)) == "cold_start"
+    assert category_of(sp("gpu_start.pull", "io", 0, 1, "gpu_start")) == "cold_start"
+    assert category_of(sp("queue", "io", 0, 1)) == "cold_start"             # this computer: waiting in the queue
     assert category_of(sp("transcribe.load_model", "load", 0, 1)) == "model_loading"
-    assert category_of(sp("transcribe.asr", "step", 0, 1)) == "speech"
+    assert category_of(sp("transcribe.asr", "step", 0, 1)) == "transcription"
+    assert category_of(sp("diarize.run", "step", 0, 1)) == "speakers"
     assert category_of(sp("summarize", "llm", 0, 1)) == "llm"
     assert category_of(sp("index.db", "step", 0, 1)) == "database"
     assert category_of(sp("search.embed", "step", 0, 1)) == "embedding"
     assert category_of(sp("extract_audio", "step", 0, 1)) == "media"
+    assert category_of(sp("visual", "step", 0, 1)) == "media"
     assert category_of(sp("render", "step", 0, 1)) == "other"
-    assert category_of({"name": "running.x", "kind": "running", "category": "speech"}) == "speech"
+    assert category_of(sp("pickup", "step", 0, 1)) == "other"
+    assert category_of(sp("step.diarizing", "step", 0, 1)) == "speakers"   # live view of finished cloud steps
+    assert category_of({"name": "running.x", "kind": "running", "category": "transcription"}) == "transcription"
+
+
+def test_budget_lines_include_model_loading():
+    assert budget_line_of(sp("transcribe.load_model", "load", 0, 1, "transcribe")) == "whisperx"
+    assert budget_line_of(sp("diarize", "step", 0, 1)) == "pyannote"
+    assert budget_line_of(sp("index.embed", "step", 0, 1, "index")) == "summary"
+    assert budget_line_of(sp("classify", "llm", 0, 1)) == "summary"
+    assert budget_line_of(sp("gpu_start.wait", "io", 0, 1, "gpu_start")) == "cold_start"
+    assert budget_line_of(sp("visual", "step", 0, 1)) == "other"
 
 
 def test_breakdown_splits_parents_and_adds_up_to_total():
@@ -113,8 +131,9 @@ def test_breakdown_splits_parents_and_adds_up_to_total():
         sp("extract_audio", "cached", 55, 55),                     # reused: ignored
     ]}
     d = as_dict(breakdown(tl))
-    assert d == {"upload_queue": 5, "model_loading": 10, "speech": 40, "llm": 30, "other": 15}
+    assert d == {"transfer": 5, "model_loading": 10, "transcription": 40, "llm": 30, "other": 15}
     assert round(sum(d.values()), 6) == 100
+    assert [i["category"] for i in breakdown(tl)] == ["transfer", "model_loading", "transcription", "llm", "other"]
 
 
 def test_parallel_work_counts_only_when_nobody_else_is_working():
@@ -123,7 +142,19 @@ def test_parallel_work_counts_only_when_nobody_else_is_working():
         sp("visual", "step", 10, 50, parallel=True),  # 30 s hidden behind transcription, 10 s exposed
         sp("summarize", "llm", 50, 60),
     ]}
-    assert as_dict(breakdown(tl)) == {"speech": 40, "llm": 10, "media": 10}
+    assert as_dict(breakdown(tl)) == {"transcription": 40, "media": 10, "llm": 10}
+    assert run_stats(tl)["parallel"] == [{"label": "visual", "duration": 40, "hidden": 30}]
+
+
+def test_whisperx_and_pyannote_run_one_after_the_other():
+    """The real GPU run: scene detection (60 s) is hidden behind the audio; speech steps are sequential."""
+    tl = {"total": 126.8, "spans": [
+        sp("probe", "step", 0.3, 0.4), sp("extract_audio", "step", 0.4, 1.8),
+        sp("transcribe", "step", 1.8, 85.1), sp("visual", "step", 2.1, 62.4, parallel=True),
+        sp("diarize", "step", 85.1, 126.5)]}
+    d = as_dict(breakdown(tl))
+    assert d["transcription"] == 83.3 and d["speakers"] == 41.4 and d["media"] == 1.5  # no scene time counted
+    assert run_stats(tl)["parallel"][0]["hidden"] == 60.3
 
 
 def test_aggregate_uses_full_runs_and_percentiles():
@@ -138,10 +169,11 @@ def test_aggregate_uses_full_runs_and_percentiles():
                for t in [1, 2, 3, 4, 10]]
     a = aggregate([full, reused, failed, old_format], queries)
     assert (a["runs"], a["runs_skipped"]) == (1, 3)
+    assert a["environment"] == "local" and a["budget_lines"] is None
     assert a["speed_median"] == round(100 / 60, 2)
-    assert a["bottleneck"]["category"] in ("speech", "llm") and a["llm_share"] == 0.5
-    speech = next(i for i in a["breakdown"] if i["category"] == "speech")
-    assert speech["per_video_minute"] == 50.0  # 50 s per minute of video
+    assert a["bottleneck"]["category"] in ("transcription", "llm") and a["llm_share"] == 0.5
+    transcription = next(i for i in a["breakdown"] if i["category"] == "transcription")
+    assert transcription["per_video_minute"] == 50.0 and transcription["median"] == 50
     assert (a["queries"]["p50"], a["queries"]["p95"]) == (3, 10)
     assert a["queries"]["database_p50"] == 0.1
     assert a["config"] == {"device": "cpu"}
@@ -150,3 +182,56 @@ def test_aggregate_uses_full_runs_and_percentiles():
 def test_aggregate_empty():
     a = aggregate([], [])
     assert a["runs"] == 0 and a["breakdown"] == [] and a["queries"]["p50"] is None
+
+
+# ---------- Stage 3: cloud runs ----------
+
+def cloud_run(total=1000, gpu_start=400, video=600):
+    """upload 20 s, GPU start, download 2 s, work, upload results 3 s, server download 1 s, index 4 s."""
+    t = 20 + gpu_start
+    spans = [sp("upload", "io", 0, 20), sp("gpu_start", "io", 20, t), sp("gpu_start.pull", "io", 100, t, "gpu_start"),
+             sp("s3_download", "io", t, t + 2), sp("extract_audio", "step", t + 2, t + 12),
+             sp("transcribe", "step", t + 12, t + 302), sp("summarize", "llm", t + 302, total - 10),
+             sp("s3_upload_results", "io", total - 10, total - 7), sp("results_download", "io", total - 6, total - 5),
+             sp("index", "step", total - 4, total), sp("index.db", "step", total - 1, total, "index")]
+    return {"status": "done", "total": total, "video_duration": video, "source": "cloud",
+            "config": {"device": "cuda"}, "spans": spans}
+
+
+def test_cloud_run_stats():
+    stats = run_stats(cloud_run())
+    assert stats["environment"] == "cloud" and stats["cold_start"] == 400
+    # processing = work only, not upload / cold start / transfers
+    assert stats["processing"] == 10 + 290 + (1000 - 10 - 722) + 4
+    d = as_dict(stats["breakdown"])
+    assert d["cold_start"] == 400 and d["transfer"] == 20 + 2 + 3 + 1 and d["media"] == 10
+    assert d["llm"] == 1000 - 10 - 722 and d["embedding"] == 3 and d["database"] == 1
+    assert round(sum(d.values()), 6) == 1000
+    assert stats["budget"] is None  # a 10-minute video isn't checked against the 1-hour budget
+
+
+def test_budget_check_for_a_one_hour_cloud_video():
+    run = cloud_run(total=1100, gpu_start=420, video=3600)
+    budget = run_stats(run)["budget"]
+    rows = {r["line"]: r for r in budget["rows"]}
+    assert rows["cold_start"]["seconds"] == 420 and rows["cold_start"]["within"] is False   # > 6 min
+    assert rows["ffmpeg"]["within"] is True and rows["ffmpeg"]["target"] == "< 1 min"
+    assert rows["summary"]["seconds"] == (1090 - 742) + 4                                   # Claude + indexing
+    assert budget["total"] == 1100 and budget["passed"] is True                             # < 20 min
+
+
+def test_aggregate_keeps_cloud_and_local_runs_apart():
+    local = {"status": "done", "total": 100, "video_duration": 60, "config": {"device": "cpu"},
+             "source": "dashboard", "spans": [sp("transcribe", "step", 0, 100)]}
+    one_hour = cloud_run(total=1100, gpu_start=500, video=3600)
+    runs = [one_hour, cloud_run(gpu_start=300), local]
+    a = aggregate(runs, [])
+    assert a["environment"] == "cloud" and a["environments"] == {"cloud": 2, "local": 1}
+    assert a["runs"] == 2 and a["cold_start_median"] == 400 and a["config"] == {"device": "cuda"}
+    lines = {b["line"]: b for b in a["budget_lines"]}
+    assert list(lines) == ["cold_start", "ffmpeg", "whisperx", "pyannote", "summary"]
+    assert lines["cold_start"]["median"] == 400 and lines["cold_start"]["target"] == "≤ 6 min"
+    assert a["budget"]["video_duration"] == 3600  # the newest ~1-hour cloud run
+    local_only = aggregate(runs, [], "local")
+    assert local_only["runs"] == 1 and local_only["budget"] is None and local_only["budget_lines"] is None
+    assert aggregate([local], [])["environment"] == "local"  # no cloud runs yet

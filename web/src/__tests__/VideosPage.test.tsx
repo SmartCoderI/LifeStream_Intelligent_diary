@@ -111,8 +111,11 @@ test("upload error is shown", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent("larger than 1024 MB");
 });
 
-test("old journal links go to the diary", async () => {
-  renderAt("/journal/2026-11-04");
-  expect(await screen.findByText("2 videos recorded")).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "Diary" })).toBeInTheDocument();
+test("the daily journal page is gone and old links go to the library", async () => {
+  for (const path of ["/journal/2026-11-04", "/diary/2026-11-04", "/diaries"]) {
+    const { unmount } = renderAt(path);
+    expect(await screen.findByRole("heading", { name: "Videos" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Diary|Journal/ })).not.toBeInTheDocument();
+    unmount();
+  }
 });

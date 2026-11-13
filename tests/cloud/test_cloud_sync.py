@@ -72,12 +72,14 @@ def test_copies_the_workers_progress(tmp_path, s3):
 def test_done_downloads_indexes_and_records_the_run(tmp_path, s3, worker_results):
     indexed = []
     sync = make_sync(tmp_path, s3, index_fn=lambda out, s: indexed.append(out.name) or 5)
-    uploaded = time.time() - 300
+    uploaded = time.time() - 600
     folder = start_upload(sync, uploaded_at=uploaded)
     write_status(folder, upload_started_at=uploaded - 30)
     upload_folder(s3, BUCKET, worker_results, f"out/{VID}/")
-    worker_says(s3, status="done", step="done", started_at=uploaded + 120, finished_at=time.time(),
-                step_timings={"transcribing": 60.0, "diarizing": 20.0, "summarizing": 9.0}, job_id="job-1")
+    pipeline_end = json.loads((worker_results / "timeline.json").read_text())["finished_at"]
+    worker_says(s3, status="done", step="done", started_at=uploaded + 450, finished_at=pipeline_end + 4,
+                step_timings={"transcribing": 60.0, "diarizing": 20.0, "summarizing": 9.0}, job_id="job-1",
+                host_booted_at=uploaded + 110, pull_started_at=uploaded + 160, pull_stopped_at=uploaded + 430)
 
     sync.tick()
 
@@ -91,11 +93,44 @@ def test_done_downloads_indexes_and_records_the_run(tmp_path, s3, worker_results
     assert (sync.out_root / "diaries" / "2026-11-04.md").exists()  # the day's diary is rebuilt here
 
     (run,) = [json.loads(line) for line in (sync.out_root / "_logs" / "runs.jsonl").read_text().splitlines()]
-    names = [s["name"] for s in run["spans"]]
-    assert {"upload", "queue", "index"} <= set(names) and run["status"] == "done" and run["source"] == "cloud"
+    assert run["status"] == "done" and run["source"] == "cloud"
     spans = {s["name"]: s for s in run["spans"]}
     assert spans["upload"]["duration"] == pytest.approx(30, abs=1)
-    assert spans["queue"]["duration"] == pytest.approx(120, abs=1)  # upload done -> worker started (cold start)
+    # GPU start = upload finished -> worker running, split by what the worker reported
+    assert spans["gpu_start"]["duration"] == pytest.approx(450, abs=1) and spans["gpu_start"]["meta"]["cold"]
+    parts = [(n, round(spans[n]["duration"])) for n in
+             ("gpu_start.wait", "gpu_start.boot", "gpu_start.pull", "gpu_start.container")]
+    assert parts == [("gpu_start.wait", 110), ("gpu_start.boot", 50), ("gpu_start.pull", 270),
+                     ("gpu_start.container", 20)]
+    assert spans["s3_upload_results"]["duration"] == pytest.approx(4, abs=0.5)
+    assert {"results_download", "render", "index"} <= set(spans)  # (s3_download comes from run_job)
+
+    from lifestream.timing import run_stats
+    stats = run_stats(run)
+    assert stats["environment"] == "cloud" and stats["cold"] is True
+    assert stats["cold_start"] == pytest.approx(450, abs=1)
+    groups = {b["category"]: b["seconds"] for b in stats["breakdown"]}
+    assert groups["cold_start"] == pytest.approx(450, abs=1)
+    assert groups["transfer"] == pytest.approx(30 + 4, abs=1.5)  # browser upload + S3 transfers
+    # the worker's own steps are in the record (the fake models take ~0 s, so no stage totals here)
+    assert {"probe", "transcribe", "diarize", "classify", "summarize"} <= {s["name"] for s in run["spans"]}
+    # processing time counts work only: not the upload, the GPU start or the transfers
+    assert stats["processing"] < run["total"] - 480
+
+
+def test_warm_machine_has_no_boot_step(tmp_path, s3, worker_results):
+    sync = make_sync(tmp_path, s3)
+    uploaded = time.time() - 120
+    start_upload(sync, uploaded_at=uploaded)
+    upload_folder(s3, BUCKET, worker_results, f"out/{VID}/")
+    worker_says(s3, status="done", step="done", started_at=uploaded + 20, step_timings={},
+                host_booted_at=uploaded - 3600, pull_started_at=uploaded + 15, pull_stopped_at=uploaded + 16)
+    sync.tick()
+    (run,) = [json.loads(line) for line in (sync.out_root / "_logs" / "runs.jsonl").read_text().splitlines()]
+    spans = {s["name"]: s for s in run["spans"]}
+    assert spans["gpu_start"]["meta"]["cold"] is False and "gpu_start.boot" not in spans
+    assert spans["gpu_start.wait"]["label"].startswith("Waiting in the Batch queue")
+    assert round(spans["gpu_start.wait"]["duration"]) == 15
 
 
 def test_worker_failure_is_reported(tmp_path, s3):
@@ -159,3 +194,39 @@ def test_job_that_ends_without_reporting_is_failed(tmp_path, s3):
     sync.tick()
     status = read_status(folder)
     assert status["status"] == "failed" and "worker image" in status["error"]
+
+
+def test_failed_runs_are_recorded_too(tmp_path, s3):
+    sync = make_sync(tmp_path, s3)
+    uploaded = time.time() - 900
+    folder = start_upload(sync, uploaded_at=uploaded)
+    write_status(folder, upload_started_at=uploaded - 20)
+    partial = {"video_id": VID, "status": "failed", "finished_at": uploaded + 700, "spans": [
+        {"name": "probe", "label": "Check file", "kind": "step", "parent": None, "start": uploaded + 500,
+         "end": uploaded + 501, "duration": 1, "meta": {}},
+        {"name": "transcribe", "label": "Transcribe", "kind": "step", "parent": None, "start": uploaded + 501,
+         "end": uploaded + 700, "duration": 199, "meta": {}}]}
+    s3.put_object(Bucket=BUCKET, Key=f"out/{VID}/timeline.json", Body=json.dumps(partial).encode())
+    worker_says(s3, status="failed", step="failed", error="CUDA out of memory", started_at=uploaded + 480,
+                finished_at=uploaded + 701, step_timings={"transcribing": 199})
+    sync.tick()
+
+    (run,) = [json.loads(line) for line in (sync.out_root / "_logs" / "runs.jsonl").read_text().splitlines()]
+    assert run["status"] == "failed" and run["error"] == "CUDA out of memory" and run["source"] == "cloud"
+    names = [s["name"] for s in run["spans"]]
+    assert names[:2] == ["upload", "gpu_start"] and "transcribe" in names
+    assert run["total"] == pytest.approx(721, abs=1)
+
+
+def test_job_failing_before_start_is_recorded(tmp_path, s3):
+    batch = FakeBatch()
+    batch.jobs.append({"jobId": "job-9", "status": "FAILED", "createdAt": 5, "statusReason": "Image not found",
+                       "parameters": {"input": f"s3://{BUCKET}/{KEY}"}})
+    sync = make_sync(tmp_path, s3, batch=batch)
+    folder = start_upload(sync, uploaded_at=time.time() - 60)
+    write_status(folder, step="queued", upload_started_at=time.time() - 75)
+    sync.tick()
+    (run,) = [json.loads(line) for line in (sync.out_root / "_logs" / "runs.jsonl").read_text().splitlines()]
+    assert run["status"] == "failed" and "Image not found" in run["error"]
+    assert [s["name"] for s in run["spans"]] == ["upload", "gpu_start"]
+    assert run["spans"][1]["duration"] == pytest.approx(60, abs=2)

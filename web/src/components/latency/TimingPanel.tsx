@@ -1,5 +1,5 @@
 import { api, type Timeline } from "../../lib/api";
-import { configLine } from "../../lib/categories";
+import { configLine, parallelNote } from "../../lib/categories";
 import { duration } from "../../lib/format";
 import { usePolling } from "../../lib/usePolling";
 import BreakdownBar from "./BreakdownBar";
@@ -29,6 +29,7 @@ export default function TimingPanel({ videoId }: { videoId: string }) {
               note: s.bottleneck ? `${Math.round(s.bottleneck.share * 100)}% · ${duration(s.bottleneck.seconds)}` : undefined },
           ]} />
           <BreakdownBar items={s.breakdown} />
+          {parallelNote(s.parallel) && <p className="muted small">{parallelNote(s.parallel)}</p>}
           {s.cached_steps.length > 0 && (
             <p className="muted small">Reused saved results, not timed: {s.cached_steps.join(", ")}</p>
           )}

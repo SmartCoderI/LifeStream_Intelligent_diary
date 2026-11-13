@@ -2,11 +2,12 @@
 
 import datetime as dt
 import json
+import time
 from pathlib import Path
 
 import pytest
 
-from lifestream.cloud.worker import parse_s3_uri, resolve_date, run_job, video_id_from_key
+from lifestream.cloud.worker import parse_s3_uri, resolve_date, run_job, startup_times, video_id_from_key
 from lifestream.config import Settings
 
 
@@ -95,6 +96,21 @@ def test_run_job_failure_propagates(tmp_path):
     assert status["status"] == "failed" and status["error"] == "CUDA out of memory"
 
 
+def test_failed_job_keeps_its_partial_timeline(tmp_path):
+    def fails_mid_way(video, date, out_root, settings, *, video_id, **kw):
+        folder = Path(out_root) / video_id
+        folder.mkdir(parents=True)
+        (folder / "timeline.json").write_text('{"status": "failed", "spans": []}')
+        raise RuntimeError("diarization crashed")
+
+    s3 = FakeS3()
+    with pytest.raises(RuntimeError):
+        run_job("s3://bkt/uploads/x/x.mp4", "s3://bkt/out/", "today", Settings(), s3=s3,
+                work_dir=tmp_path, process=fails_mid_way)
+    assert set(s3.uploads) == {("bkt", "out/x/timeline.json")}
+    assert s3.puts[("bkt", "out/x/status.json")]["status"] == "failed"
+
+
 def test_resolve_date_prefers_the_uploaded_date():
     assert resolve_date("today", "2026-11-01") == "2026-11-01"
     assert resolve_date("2026-11-12", "2026-11-01") == "2026-11-12"   # an explicit job parameter wins
@@ -138,3 +154,21 @@ def test_dashboard_upload_uses_its_video_id_date_and_reports_each_step(tmp_path)
     assert set(final["step_timings"]) == {"validating", "transcribing", "diarizing", "detecting_scenes",
                                           "classifying", "summarizing", "uploading_results"}
     assert all(t >= 0 for t in final["step_timings"].values())
+
+
+def test_startup_times_from_uptime_and_ecs_metadata(tmp_path):
+    uptime = tmp_path / "uptime"
+    uptime.write_text("120.50 400.00\n")
+    responses = {
+        "http://meta/v4/task": {"PullStartedAt": "2026-11-13T05:00:10.123456789Z",
+                                "PullStoppedAt": "2026-11-13T05:04:40Z"},
+        "http://meta/v4": {"StartedAt": "2026-11-13T05:05:00Z"},
+    }
+    times = startup_times(uptime, "http://meta/v4", fetch=responses.__getitem__)
+    assert times["host_booted_at"] == pytest.approx(time.time() - 120.5, abs=2)
+    assert times["pull_stopped_at"] - times["pull_started_at"] == pytest.approx(269.877, abs=0.01)
+    assert times["container_started_at"] == dt.datetime(2026, 11, 13, 5, 5, tzinfo=dt.timezone.utc).timestamp()
+
+
+def test_startup_times_outside_aws_is_empty(tmp_path):
+    assert startup_times(tmp_path / "missing", "") == {}

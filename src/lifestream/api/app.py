@@ -54,7 +54,7 @@ from ..memory.store import MemoryConfigError, MemoryUnavailable
 from ..processing.media import SUPPORTED_EXTENSIONS
 from ..timing import STEP_CATEGORIES, Timings, aggregate, append_log, category_of, read_log, run_stats
 from .jobs import STEP_LABELS, Job, JobQueue, ProcessFn, pre_processing_spans, read_status, write_status
-from ..cloud.sync import CloudStore, CloudSync
+from ..cloud.sync import CloudStore, CloudSync, live_spans
 
 VIDEO_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 KEYFRAME = re.compile(r"^frame_\d+\.jpg$")
@@ -106,9 +106,17 @@ def _default_answer(settings: Settings) -> AnswerFn:
     return answer
 
 
-def _default_index(out_dir: Path, settings: Settings) -> int | None:
+def _default_index(out_dir: Path, settings: Settings, timings: Timings | None = None) -> int | None:
+    """`timings`: record model loading, embedding and database time as sub-steps of "index"."""
+    from ..memory.embeddings import get_embedder, is_loaded
     from ..memory.indexer import index_output
-    return index_output(out_dir, settings)
+    if timings is not None:
+        cold = not is_loaded(settings.embed_model)
+        with timings.step("index.load_model", f"Load embedding model ({'cold' if cold else 'warm'})",
+                          kind="load", parent="index") as span:
+            get_embedder(settings.embed_model)
+            span["meta"]["cold"] = cold
+    return index_output(out_dir, settings, timings=timings)
 
 
 def _default_unindex(video_id: str, settings: Settings) -> None:
@@ -417,9 +425,10 @@ def create_app(
         status = read_status(folder)
         state = status.get("status")
         now = time.time()
+        cloud_video = bool(cloud and status.get("s3_key"))
         if state == "queued":
             timeline = {"video_id": video_id, "status": "queued", "error": None, "finished_at": None,
-                        "spans": pre_processing_spans(status, now)}
+                        "spans": live_spans(status, now) if cloud_video else pre_processing_spans(status, now)}
             for span in timeline["spans"]:
                 if span["name"] == "queue":
                     span["running"] = True
@@ -428,9 +437,11 @@ def create_app(
             tl_file = folder / "timeline.json"
             stale = (state == "processing" and status.get("started_at") and
                      (timeline is None or tl_file.stat().st_mtime < status["started_at"]))
-            if stale:  # processing just started; this run's timeline isn't written yet
+            if stale or (cloud_video and timeline is None):  # this run's timeline isn't written yet
+                spans = (live_spans(status, now) if cloud_video
+                         else pre_processing_spans(status, status["started_at"]))
                 timeline = {"video_id": video_id, "status": "running", "error": None, "finished_at": None,
-                            "spans": pre_processing_spans(status, status["started_at"])}
+                            "spans": spans}
             if timeline is None:
                 raise HTTPException(404, "No timing recorded for this video (it was processed before "
                                          "latency tracking, or by an older version). Retry it to record one.")
@@ -588,10 +599,11 @@ def create_app(
         return runs
 
     @app.get("/api/latency/summary")
-    def latency_summary(limit: int = 20):
-        """Headline numbers across the last `limit` runs and queries."""
+    def latency_summary(limit: int = 20, environment: str | None = None):
+        """Headline numbers across the last `limit` runs of one environment (cloud GPU or this
+        computer; default: cloud if it has runs) and the recent queries."""
         n = max(1, min(limit, 500))
-        return aggregate(read_log(out_root / "_logs" / "runs.jsonl", n), read_log(queries_log, 200))
+        return aggregate(read_log(out_root / "_logs" / "runs.jsonl", n), read_log(queries_log, 200), environment)
 
     @app.get("/api/latency/queries")
     def latency_queries(limit: int = 50):

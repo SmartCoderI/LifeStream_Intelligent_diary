@@ -95,7 +95,7 @@ test("timing tab shows the latency breakdown", async () => {
   await userEvent.click(screen.getByRole("tab", { name: /Timing/ }));
   expect(await screen.findByText("Bottleneck")).toBeInTheDocument();
   expect(screen.getByText("0.97×")).toBeInTheDocument();
-  expect(screen.getAllByText("Speech models").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Transcription (WhisperX)").length).toBeGreaterThan(0);
   expect(screen.queryByTestId("wf-row")).not.toBeInTheDocument();  // steps collapsed by default
   await userEvent.click(screen.getByRole("button", { name: /Show step timeline/ }));
   const rows = screen.getAllByTestId("wf-row");
