@@ -1,4 +1,4 @@
-"""F7 infrastructure tests: terraform validate, tflint, checkov, and checks on the plan JSON.
+"""F7 + Stage 3 infrastructure tests: terraform validate, tflint, checkov, and checks on the plan JSON.
 
 The plan runs offline (fake credentials, fixed account / VPC IDs), so these tests need no AWS
 access. They need `terraform` (and tflint / checkov for those two tests); each skips if missing.
@@ -49,6 +49,7 @@ def _plan(tmp_path_factory, *extra: str) -> dict:
     result = _tf("plan", "-input=false", "-lock=false", "-refresh=false", f"-out={out}",
                  "-var", "offline_plan=true", "-var", f"account_id={ACCOUNT}", "-var", f"region={REGION}",
                  "-var", "vpc_id=vpc-0123456789abcdef0", "-var", 'subnet_ids=["subnet-0123456789abcdef0"]',
+                 "-var", "server_ami_id=ami-0123456789abcdef0", "-var", "cloudfront_prefix_list_id=pl-82a045eb",
                  *extra)
     assert result.returncode == 0, result.stderr
     shown = _tf("show", "-json", str(out))
@@ -156,7 +157,8 @@ def test_bucket_policy_grants_nothing_and_requires_https(plan):
 
 # ---------- IAM: permissions limited to the right resources ----------
 
-STAR_ALLOWED = {"ecr:GetAuthorizationToken"}  # AWS doesn't support resource-level permissions here
+# AWS doesn't support resource-level permissions for these
+STAR_ALLOWED = {"ecr:GetAuthorizationToken", "batch:ListJobs", "batch:DescribeJobs"}
 
 
 def test_no_wildcard_actions_or_unscoped_resources(plan):
@@ -211,7 +213,12 @@ def test_build_project(plan):
 def test_trust_policies(plan):
     roles = {r["name"]: _statements(r["assume_role_policy"]) for r in _resources(plan, "aws_iam_role")}
     assert set(roles) == {"lifestream-worker-execution", "lifestream-worker-job", "lifestream-batch-instance",
-                          "lifestream-image-build"}
+                          "lifestream-image-build", "lifestream-upload-trigger", "lifestream-server"}
+    (s,) = roles["lifestream-upload-trigger"]
+    assert s["Principal"] == {"Service": "events.amazonaws.com"}
+    assert s["Condition"]["StringEquals"]["aws:SourceAccount"] == ACCOUNT
+    (s,) = roles["lifestream-server"]
+    assert s["Principal"] == {"Service": "ec2.amazonaws.com"}
     (s,) = roles["lifestream-image-build"]
     assert s["Principal"] == {"Service": "codebuild.amazonaws.com"}
     assert s["Condition"]["StringEquals"]["aws:SourceAccount"] == ACCOUNT
@@ -226,7 +233,8 @@ def test_trust_policies(plan):
 
 def test_only_expected_managed_policies(plan):
     attached = {a["policy_arn"] for a in _resources(plan, "aws_iam_role_policy_attachment")}
-    assert attached == {"arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"}
+    assert attached == {"arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role",
+                        "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"}  # deploys via Run Command
 
 
 # ---------- cost ----------
@@ -239,7 +247,8 @@ def test_lowest_cost_settings(plan):
     assert lifecycle["noncurrent_version_expiration"][0]["noncurrent_days"] == 1
     assert {g["retention_in_days"] for g in _resources(plan, "aws_cloudwatch_log_group")} == {30}
     params = _resources(plan, "aws_ssm_parameter")
-    assert {p["name"] for p in params} == {"/lifestream/anthropic-api-key", "/lifestream/hf-token"}
+    assert {p["name"] for p in params} == {"/lifestream/anthropic-api-key", "/lifestream/hf-token",
+                                           "/lifestream/api-key"}
     assert all(p["type"] == "SecureString" and p["tier"] == "Standard" for p in params)  # free tier
     assert not _resources(plan, "aws_secretsmanager_secret")
     assert _one(plan, "aws_codebuild_project")["environment"][0]["compute_type"] == "BUILD_GENERAL1_SMALL"
@@ -290,7 +299,7 @@ def test_gpu_compute_environment_scales_to_zero(plan):
 
 
 def test_worker_security_group_has_no_inbound(plan):
-    sg = _one(plan, "aws_security_group")
+    (sg,) = [g for g in _resources(plan, "aws_security_group") if g["name_prefix"] == "lifestream-batch-"]
     assert sg["ingress"] == []
     for separate in ("aws_security_group_rule", "aws_vpc_security_group_ingress_rule"):
         assert not _resources(plan, separate)
@@ -310,3 +319,120 @@ def test_job_definition(plan):
     assert not any(e["name"] == "ANTHROPIC_API_KEY" for e in props.get("environment", []))
     assert job["parameters"]["output"] == f"s3://{BUCKET}/out/"
     assert {"name": "LLM_MODEL", "value": "claude-opus-5-5"} in props["environment"]
+
+
+# ---------- Stage 3, F11: uploads start the GPU job (EventBridge, no Lambda) ----------
+
+def _matches(pattern, event) -> bool:
+    """The subset of EventBridge matching the upload rule uses: lists of exact values, nested
+    objects, and {"wildcard": ...} (where * matches anything, including "/").
+    The deployed rule is also checked against AWS's own TestEventPattern (see infra/README.md)."""
+    import fnmatch
+    for field, expected in pattern.items():
+        if field not in event:
+            return False
+        value = event[field]
+        if isinstance(expected, dict):
+            if not isinstance(value, dict) or not _matches(expected, value):
+                return False
+        elif not any((fnmatch.fnmatchcase(value, e["wildcard"]) if isinstance(e, dict) else value == e)
+                     for e in expected):
+            return False
+    return True
+
+
+def _upload_event(key: str, bucket: str = BUCKET) -> dict:
+    return {"source": "aws.s3", "detail-type": "Object Created",
+            "detail": {"bucket": {"name": bucket}, "object": {"key": key, "size": 1}}}
+
+
+@pytest.mark.parametrize("key,starts_job", [
+    ("uploads/team-sync/team-sync.mp4", True),
+    ("uploads/vlog-2/vlog-2.mov", True),
+    ("uploads/clip.webm", True),
+    ("out/team-sync/summary.json", False),       # results
+    ("raw/team-sync/team-sync.mp4", False),      # wrong prefix
+    ("build/server.tar.gz", False),
+    ("uploads/team-sync/notes.txt", False),      # not a video
+    ("uploads/team-sync/team-sync.mp4.part", False),
+])
+def test_upload_rule_starts_jobs_only_for_videos_under_uploads(plan, key, starts_job):
+    pattern = json.loads(_one(plan, "aws_cloudwatch_event_rule")["event_pattern"])
+    assert _matches(pattern, _upload_event(key)) is starts_job
+
+
+def test_upload_rule_ignores_other_buckets_and_events(plan):
+    pattern = json.loads(_one(plan, "aws_cloudwatch_event_rule")["event_pattern"])
+    assert not _matches(pattern, _upload_event("uploads/a/a.mp4", bucket="someone-else"))
+    deleted = {**_upload_event("uploads/a/a.mp4"), "detail-type": "Object Deleted"}
+    assert not _matches(pattern, deleted)
+
+
+def test_upload_rule_extensions_match_the_app():
+    from lifestream.processing.media import SUPPORTED_EXTENSIONS
+    text = (INFRA / "locals.tf").read_text()
+    listed = json.loads(text.split("video_extensions = ", 1)[1].splitlines()[0])
+    assert set(listed) == SUPPORTED_EXTENSIONS
+
+
+def test_upload_target_submits_the_worker_job(plan):
+    assert _one(plan, "aws_s3_bucket_notification")["eventbridge"] is True
+    target = _one(plan, "aws_cloudwatch_event_target")
+    assert target["batch_target"][0]["job_definition"] == "lifestream-worker"
+    transformer = target["input_transformer"][0]
+    assert transformer["input_paths"] == {"key": "$.detail.object.key"}
+    rendered = transformer["input_template"].replace("<key>", "uploads/a b/a.mp4")
+    assert json.loads(rendered) == {"Parameters": {"input": f"s3://{BUCKET}/uploads/a b/a.mp4"}}
+    grants = {(a, r) for s in _policy_named(plan, "submit-worker-job")
+              for a in _as_list(s["Action"]) for r in _as_list(s["Resource"])}
+    jobdef = f"arn:aws:batch:{REGION}:{ACCOUNT}:job-definition/lifestream-worker"
+    assert grants == {("batch:SubmitJob", f"arn:aws:batch:{REGION}:{ACCOUNT}:job-queue/lifestream-gpu"),
+                      ("batch:SubmitJob", jobdef), ("batch:SubmitJob", f"{jobdef}:*")}
+
+
+# ---------- Stage 3: dashboard server ----------
+
+def test_server_is_reachable_only_through_cloudfront(plan):
+    (sg,) = [g for g in _resources(plan, "aws_security_group") if g["name_prefix"] == "lifestream-server-"]
+    (rule,) = sg["ingress"]
+    assert (rule["from_port"], rule["to_port"], rule["protocol"]) == (80, 80, "tcp")
+    assert rule["prefix_list_ids"] == ["pl-82a045eb"] and rule["cidr_blocks"] == []
+    assert [(r["from_port"], r["to_port"]) for r in sg["egress"]] == [(443, 443)]
+
+    cdn = _one(plan, "aws_cloudfront_distribution")
+    behavior = cdn["default_cache_behavior"][0]
+    assert behavior["viewer_protocol_policy"] == "redirect-to-https"
+    assert behavior["cache_policy_id"] == "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"  # CachingDisabled
+    assert cdn["origin"][0]["custom_origin_config"][0]["origin_protocol_policy"] == "http-only"
+
+
+def test_server_instance(plan):
+    server = _one(plan, "aws_instance")
+    assert server["instance_type"] == "t4g.small"
+    assert server["metadata_options"][0]["http_tokens"] == "required"
+    assert server["metadata_options"][0]["http_put_response_hop_limit"] == 2
+    root = server["root_block_device"][0]
+    assert root["encrypted"] is True and root["volume_type"] == "gp3"
+
+
+def test_server_role_is_scoped(plan):
+    statements = {s["Sid"]: s for s in _policy_named(plan, "dashboard-server")}
+    assert set(statements) == {"SignUploadLinks", "ReadVideosAndResults", "DeleteVideos", "ListVideos",
+                               "ReadDeploySource", "RetryJobs", "FollowJobs", "ReadKeys"}
+    assert statements["SignUploadLinks"]["Resource"] == f"{BUCKET_ARN}/uploads/*"
+    assert set(_as_list(statements["ReadVideosAndResults"]["Resource"])) == \
+        {f"{BUCKET_ARN}/uploads/*", f"{BUCKET_ARN}/out/*"}
+    assert statements["ListVideos"]["Condition"]["StringLike"]["s3:prefix"] == ["uploads/*", "out/*"]
+    assert statements["ReadDeploySource"]["Resource"] == f"{BUCKET_ARN}/build/server.tar.gz"
+    assert set(_as_list(statements["ReadKeys"]["Resource"])) == {
+        f"arn:aws:ssm:{REGION}:{ACCOUNT}:parameter/lifestream/api-key",
+        f"arn:aws:ssm:{REGION}:{ACCOUNT}:parameter/lifestream/anthropic-api-key"}
+    # nothing touches build/ or the worker image, and no IAM / KMS / EC2 permissions
+    actions = {a for s in statements.values() for a in _as_list(s["Action"])}
+    assert all(a.split(":")[0] in ("s3", "batch", "ssm") for a in actions)
+
+
+def test_browser_uploads_allowed_from_the_dashboard_only(plan):
+    rule = _one(plan, "aws_s3_bucket_cors_configuration")["cors_rule"][0]
+    assert rule["allowed_methods"] == ["PUT"]
+    assert set(rule["allowed_headers"]) == {"content-type", "x-amz-meta-date"}

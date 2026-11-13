@@ -66,6 +66,14 @@ class Settings:
     speakers_file: str = field(default_factory=lambda: _env("SPEAKERS_FILE", "data/speakers.yaml"))
     search_k: int = field(default_factory=lambda: int(_env("SEARCH_K", "6")))
 
+    # Cloud mode (Stage 3). With S3_BUCKET set, the dashboard server hands out S3 upload links and
+    # the GPU work runs on AWS Batch (see cloud/sync.py); without it everything runs locally.
+    s3_bucket: str | None = field(default_factory=lambda: _env("S3_BUCKET"))
+    aws_region: str | None = field(default_factory=lambda: _env("AWS_REGION", _env("AWS_DEFAULT_REGION")))
+    batch_job_queue: str = field(default_factory=lambda: _env("BATCH_JOB_QUEUE", "lifestream-gpu"))
+    batch_job_definition: str = field(default_factory=lambda: _env("BATCH_JOB_DEFINITION", "lifestream-worker"))
+    # API key for /api/* (X-API-Key header or the dashboard's cookie). Unset = no check (local use).
+    api_key: str | None = field(default_factory=lambda: _env("API_KEY"))
 
     @property
     def active_llm_model(self) -> str:

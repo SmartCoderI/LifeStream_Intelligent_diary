@@ -51,4 +51,19 @@ locals {
 
   anthropic_param_name = "/${var.project}/anthropic-api-key"
   anthropic_param_arn  = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.anthropic_param_name}"
+
+  # Stage 3
+  job_queue_arn       = "arn:${local.partition}:batch:${var.region}:${local.account_id}:job-queue/${var.project}-gpu"
+  job_definition_name = "${var.project}-worker"
+  # SubmitJob by name checks the name and every revision
+  job_definition_arns = [
+    "arn:${local.partition}:batch:${var.region}:${local.account_id}:job-definition/${local.job_definition_name}",
+    "arn:${local.partition}:batch:${var.region}:${local.account_id}:job-definition/${local.job_definition_name}:*",
+  ]
+  api_key_param_name = "/${var.project}/api-key"
+  api_key_param_arn  = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.api_key_param_name}"
+  server_role_name   = "${var.project}-server"
+  server_source_key  = "build/server.tar.gz"
+  # must match SUPPORTED_EXTENSIONS in src/lifestream/processing/media.py (the server lowercases them)
+  video_extensions = [".mp4", ".mov", ".mkv", ".m4v", ".webm", ".avi"]
 }

@@ -56,8 +56,10 @@ def test_upload_process_and_read_everything(make_client, format_samples):
         assert video["status"] == "queued" and video["size_bytes"] > 0
 
         status = wait_done(client, "team-meeting")
+        timings = status.pop("step_timings")
         assert status == {"video_id": "team-meeting", "status": "done", "step": "done",
-                          "step_label": "Completed", "progress": 100, "error": None}
+                          "step_label": "Completed", "progress": 100, "error": None, "type": "meeting"}
+        assert timings["transcribe"] >= 0 and timings["total"] > 0
 
         listed = client.get("/api/videos").json()
         assert [v["video_id"] for v in listed] == ["team-meeting"]

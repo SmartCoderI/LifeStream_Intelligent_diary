@@ -75,3 +75,15 @@ resource "aws_s3_bucket_policy" "data" {
   policy     = data.aws_iam_policy_document.bucket.json
   depends_on = [aws_s3_bucket_public_access_block.data]
 }
+
+# Stage 3: the dashboard's browser uploads straight to S3 with a presigned PUT link.
+resource "aws_s3_bucket_cors_configuration" "data" {
+  bucket = aws_s3_bucket.data.id
+  cors_rule {
+    allowed_methods = ["PUT"]
+    allowed_origins = concat(["https://${aws_cloudfront_distribution.dashboard.domain_name}"], var.extra_cors_origins)
+    allowed_headers = ["content-type", "x-amz-meta-date"]
+    expose_headers  = ["ETag"]
+    max_age_seconds = 3600
+  }
+}

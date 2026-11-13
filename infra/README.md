@@ -1,4 +1,4 @@
-# F7: cloud infrastructure (Terraform)
+# Cloud infrastructure (Terraform): F7 GPU worker + Stage 3 dashboard
 
 One AWS Batch job processes one video on a GPU:
 
@@ -17,6 +17,9 @@ that's the cold start M3a measures.
 | `iam.tf` | Execution role (pull image, write logs, read the key), job role (read `uploads/*`, write `out/*`), instance role |
 | `batch.tf` | Security group (no inbound), launch template (IMDSv2, 100 GB encrypted disk), GPU compute environment, queue, job definition |
 | `build.tf` | CodeBuild project that builds and pushes the image (smallest machine), its role, log group, SSM parameter for `HF_TOKEN` |
+| `events.tf` | Stage 3, F11: S3 → EventBridge rule (video files under `uploads/` only) → Batch `SubmitJob`, and its role |
+| `server.tf` | Stage 3: dashboard server (EC2 t4g.small + fixed IP), its role, security group (HTTP from CloudFront only), CloudFront (HTTPS), SSM parameter for the API key |
+| `server/` | The server's Dockerfile and `start.sh` (run on the instance by `deploy.sh`) |
 
 ## Prerequisites
 
@@ -91,6 +94,45 @@ aws s3 ls "s3://$BUCKET/out/" --recursive
 
 Logs: CloudWatch log group `/aws/batch/lifestream-worker`.
 
+## 5. Stage 3: the deployed dashboard
+
+```
+browser ─HTTPS─► CloudFront ─HTTP─► EC2 (FastAPI app + web app, Postgres/pgvector in Docker)
+browser ─PUT (presigned)─► s3://<bucket>/uploads/<id>/<id>.mp4 ─EventBridge─► Batch GPU job
+job ─► s3://<bucket>/out/<id>/ (results) + out/<id>/status.json (rewritten after every step)
+server: follows status.json; on "done" downloads the results, rebuilds the diary, indexes for search
+```
+
+No Lambda, no load balancer, no NAT gateway. The upload's recording date travels as S3 object
+metadata (`x-amz-meta-date`); the worker reads it.
+
+**Deploy** (from the project root, AWS CLI signed in, Docker not needed):
+
+```bash
+git commit ...                 # the worker image is built from the last commit
+infra/deploy.sh --worker v2    # new worker image (status reporting needs v2+), then everything below
+infra/deploy.sh                # redeploy: terraform apply, build web/, ship src/ to the server, restart
+```
+
+`deploy.sh` keeps the worker image tag the job definition already uses unless you pass `--worker`.
+On the first run it creates a random API key in SSM (`/lifestream/api-key`); read it with
+
+```bash
+aws ssm get-parameter --name /lifestream/api-key --with-decryption --query Parameter.Value --output text
+```
+
+The dashboard asks for it once and keeps it in a cookie; scripts send it as `X-API-Key`.
+The server code is copied from your working tree; the server builds its own image (arm64,
+CPU-only PyTorch, ~5 GB) and restarts. The first deploy takes ~10 minutes, later ones a few.
+
+**Data on the server**: `/opt/lifestream/data` (results, speaker names, run history) and the
+`lifestream-pg` Docker volume (search index). S3 keeps the videos and results, so a lost server
+can be rebuilt; re-index with `docker exec lifestream-server lifestream index --out /app/data/out`.
+
+**Logs**: `aws ssm start-session --target <instance id>`, then `sudo docker logs lifestream-server`.
+
+Uploading to `uploads/` by hand now also starts a job (any video file under that prefix).
+
 ## Tests
 
 ```bash
@@ -112,6 +154,9 @@ Everything is set to the lowest-cost option:
 - No NAT gateway, load balancer or always-on instance. Image scanning is the free basic scan.
 - **Per image build**: CodeBuild's smallest machine, about $0.005 per minute (roughly
   $0.10-0.20 per build); nothing while idle.
+- **Dashboard server** (always on): t4g.small about $12/month + 30 GB disk about $2.40 +
+  public IPv4 about $3.60; CloudFront and EventBridge are within their free tiers for this use.
+  Stop the instance when you're not using it (`aws ec2 stop-instances`); the IP stays.
 - **While a job runs**: one g4dn.xlarge (about $0.63 an hour in us-west-1) plus its 100 GB disk.
   Batch terminates the instance a few minutes after the queue empties. `max_vcpus = 4` means at
   most one GPU instance at a time, and a job is stopped after 2 hours.
@@ -121,4 +166,5 @@ Everything is set to the lowest-cost option:
 ## Removing everything
 
 The bucket is versioned and must be emptied first (including old versions), then
-`terraform destroy`. The RDS database was created by hand and isn't managed here.
+`terraform destroy`. The RDS database was created by hand and isn't managed here; Stage 3
+doesn't use it (search runs in Postgres on the dashboard server), so it can be deleted.

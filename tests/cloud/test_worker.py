@@ -6,13 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from lifestream.cloud.worker import parse_s3_uri, resolve_date, run_job
+from lifestream.cloud.worker import parse_s3_uri, resolve_date, run_job, video_id_from_key
 from lifestream.config import Settings
 
 
 class FakeS3:
     def __init__(self):
         self.downloads, self.uploads, self.puts = [], {}, {}
+        self.history, self.metadata = [], {}
 
     def download_file(self, bucket, key, filename):
         self.downloads.append((bucket, key))
@@ -23,6 +24,12 @@ class FakeS3:
 
     def put_object(self, *, Bucket, Key, Body, ContentType):
         self.puts[(Bucket, Key)] = json.loads(Body)
+        self.history.append(json.loads(Body))
+
+    def head_object(self, *, Bucket, Key):
+        if Key not in self.metadata:
+            raise KeyError(Key)
+        return {"Metadata": self.metadata[Key]}
 
 
 def fake_process(calls):
@@ -82,4 +89,52 @@ def test_run_job_failure_propagates(tmp_path):
     with pytest.raises(RuntimeError, match="CUDA"):
         run_job("s3://bkt/uploads/x.mp4", "s3://bkt/out/", "today", Settings(), s3=s3,
                 work_dir=tmp_path, process=broken)
-    assert not s3.uploads and not s3.puts
+    assert not s3.uploads
+    assert set(s3.puts) == {("bkt", "out/x/status.json")}  # no results, but the failure is reported
+    status = s3.puts[("bkt", "out/x/status.json")]
+    assert status["status"] == "failed" and status["error"] == "CUDA out of memory"
+
+
+def test_resolve_date_prefers_the_uploaded_date():
+    assert resolve_date("today", "2026-11-01") == "2026-11-01"
+    assert resolve_date("2026-11-12", "2026-11-01") == "2026-11-12"   # an explicit job parameter wins
+    with pytest.raises(ValueError):
+        resolve_date("today", "yesterday")
+
+
+def test_video_id_from_key():
+    assert video_id_from_key("uploads/team-sync-2/team-sync-2.mp4") == "team-sync-2"
+    assert video_id_from_key("uploads/Team Sync.mp4") is None
+    assert video_id_from_key("uploads/Bad ID/x.mp4") is None
+    assert video_id_from_key("raw/team-sync/x.mp4") is None
+
+
+def test_dashboard_upload_uses_its_video_id_date_and_reports_each_step(tmp_path):
+    """F11: an upload from the dashboard (uploads/<id>/<file>, date in S3 metadata)."""
+    s3, seen = FakeS3(), {}
+    key = "uploads/team-sync-2/team-sync-2.mp4"
+    s3.metadata[key] = {"date": "2026-11-03"}
+
+    def process(video, date, out_root, settings, *, video_id, on_step, **kw):
+        seen.update(video_id=video_id, date=date)
+        for step in ("validating", "transcribing", "diarizing", "detecting_scenes", "classifying",
+                     "summarizing", "indexing"):
+            on_step(step)
+        folder = Path(out_root) / video_id
+        folder.mkdir(parents=True)
+        (folder / "summary.json").write_text("{}")
+        return folder
+
+    run_job(f"s3://bkt/{key}", "s3://bkt/out/", "today", Settings(), s3=s3, work_dir=tmp_path, process=process)
+
+    assert seen == {"video_id": "team-sync-2", "date": "2026-11-03"}
+    assert ("bkt", "out/team-sync-2/summary.json") in s3.uploads
+    steps = [h["step"] for h in s3.history if "step" in h]
+    # the status file went through every step in order, ending with done (indexing is the server's job)
+    assert steps == ["validating", "validating", "transcribing", "diarizing", "detecting_scenes",
+                     "classifying", "summarizing", "uploading_results", "done"]
+    final = s3.puts[("bkt", "out/team-sync-2/status.json")]
+    assert final["status"] == "done" and final["date"] == "2026-11-03" and final["error"] is None
+    assert set(final["step_timings"]) == {"validating", "transcribing", "diarizing", "detecting_scenes",
+                                          "classifying", "summarizing", "uploading_results"}
+    assert all(t >= 0 for t in final["step_timings"].values())

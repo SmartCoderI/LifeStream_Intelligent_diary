@@ -55,3 +55,31 @@ def fake_visual(video, out_dir, duration, threshold, min_scene_len_s, max_keyfra
 
 def fake_index(out_dir, settings):
     return 0
+
+
+class FakeBatch:
+    """The few AWS Batch calls the dashboard server makes (moto's Batch needs Docker)."""
+
+    def __init__(self):
+        self.submitted: list[dict] = []
+        self.jobs: list[dict] = []  # DescribeJobs-shaped
+
+    def submit_job(self, **kwargs):
+        self.submitted.append(kwargs)
+        job_id = f"job-{len(self.submitted)}"
+        self.jobs.append({"jobId": job_id, "jobName": kwargs["jobName"], "status": "SUBMITTED",
+                          "parameters": kwargs["parameters"], "createdAt": 1})
+        return {"jobId": job_id}
+
+    def list_jobs(self, **kwargs):
+        return {"jobSummaryList": [{"jobId": j["jobId"], "status": j["status"]} for j in self.jobs]}
+
+    def describe_jobs(self, jobs):
+        return {"jobs": [j for j in self.jobs if j["jobId"] in jobs]}
+
+
+def upload_folder(s3, bucket, folder, prefix):
+    """Put a local results folder into S3 the way the worker does."""
+    for path in sorted(folder.rglob("*")):
+        if path.is_file():
+            s3.upload_file(str(path), bucket, prefix + path.relative_to(folder).as_posix())

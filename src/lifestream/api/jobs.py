@@ -29,10 +29,12 @@ STEP_PROGRESS = {
     "merging": 80,
     "classifying": 85,
     "summarizing": 90,
+    "uploading_results": 94,
     "indexing": 96,
     "done": 100,
 }
 STEP_LABELS = {
+    "uploading": "Uploading",
     "queued": "Waiting in queue",
     "validating": "Checking the file",
     "extracting_audio": "Extracting audio",
@@ -42,6 +44,7 @@ STEP_LABELS = {
     "merging": "Building the script",
     "classifying": "Classifying video",
     "summarizing": "Writing the summary",
+    "uploading_results": "Saving results",
     "indexing": "Adding to search",
     "done": "Completed",
     "failed": "Failed",

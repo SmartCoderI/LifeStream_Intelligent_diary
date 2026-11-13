@@ -4,8 +4,8 @@ Turns video recordings (vlogs, meetings, body-cam footage) into a timestamped
 script and a structured daily diary.
 
 **Status:** Stage 1 (core processing engine), Stage 2 (memory: search, answers with citations,
-speaker names) and a web dashboard run locally. F7 (AWS Batch GPU worker, Terraform) is in
-[infra/](infra/README.md).
+speaker names) and a web dashboard run locally. Stage 3 deploys the same dashboard to AWS:
+uploads go to S3 and start a GPU job on AWS Batch automatically (see [infra/](infra/README.md)).
 
 ## Pipeline
 
@@ -40,9 +40,13 @@ src/lifestream/
 │   ├── llm.py              Claude client (swappable)
 │   ├── summarize.py        classification, summaries, daily diaries
 │   └── templates/          Markdown templates
-├── api/                    Ingestion + API (local F11/F12)
-│   ├── app.py              REST API for the dashboard
-│   └── jobs.py             background processing queue
+├── api/                    Ingestion + API (F11/F12)
+│   ├── app.py              REST API for the dashboard (local or cloud mode)
+│   └── jobs.py             background processing queue (local mode)
+├── cloud/                  AWS (F7, Stage 3)
+│   ├── worker.py           the Batch GPU job: S3 in -> pipeline -> S3 out, progress in status.json
+│   ├── sync.py             cloud mode: S3 upload links, follows jobs, downloads + indexes results
+│   └── prefetch.py         bakes the models into the worker image
 ├── memory/                 Memory Layer (Stage 2: F8-F10)
 │   ├── registry.py         F10 speaker names (YAML, per video)
 │   ├── chunking.py         F8 transcript windows + summary paragraphs
@@ -184,6 +188,36 @@ uv run lifestream eval-questions            # 16 questions about the real videos
 
 Database tests start a temporary Postgres container, so Docker must be running for `uv run pytest`
 (they are skipped otherwise). See [docs/rag-notes.md](docs/rag-notes.md) for how search works.
+
+## Cloud deployment (Stage 3)
+
+```
+browser ──HTTPS──► CloudFront ──► EC2 t4g.small: this FastAPI app (+ web app) and Postgres/pgvector
+   │  POST /api/videos → presigned S3 link; the browser PUTs the file straight to S3
+   ▼
+S3 uploads/<id>/<id>.mp4 ──EventBridge rule──► Batch GPU job (cloud/worker.py)
+                                                 └─► S3 out/<id>/ (+ status.json after every step)
+the server follows status.json; on "done" it downloads the results, rebuilds the diary, indexes for search
+```
+
+```bash
+infra/deploy.sh --worker v2   # first time: build the worker image, create everything, start the server
+infra/deploy.sh               # later: redeploy the server and web app
+```
+
+The script prints the dashboard URL and how to read the API key; the web app asks for the key
+once. Details, costs and teardown: [infra/README.md](infra/README.md).
+
+API (cloud mode; every `/api` route needs the `X-API-Key` header, otherwise 401):
+
+| Spec | Route |
+|---|---|
+| upload_video | `POST /api/videos` `{date, filename, size_bytes}` → `{video_id, presigned_put_url, upload_headers}`; PUT the file with `upload_headers`, then `POST /api/videos/{id}/uploaded` |
+| get_status | `GET /api/videos/{id}/status` → `{status, step, progress, type, step_timings, error}` |
+| get_summary | `GET /api/videos/{id}/summary`, `GET /api/days/{date}/summary` |
+| query_memory | `POST /api/query` `{question}` → `{answer, citations[]}` |
+
+Locally nothing changes: without `S3_BUCKET` in `.env` the app processes videos on this computer.
 
 ## Settings
 

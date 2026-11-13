@@ -67,8 +67,8 @@ function Processing({ video }: { video: VideoDetail }) {
             })}
           </ol>
           <p className="muted" style={{ margin: 0 }}>
-            Speech recognition and speaker identification run on this computer, which takes
-            roughly as long as the video itself. You can leave this page.
+            Speech recognition and speaker identification take a while (on a laptop, roughly as
+            long as the video). You can leave this page.
           </p>
         </>
       )}

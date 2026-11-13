@@ -1,4 +1,4 @@
-import type { AnswerResult, BreakdownItem, LatencySummary, QueryRecord, RunRecord, Span, Timeline, VideoDetail, VideoItem } from "../lib/api";
+import type { AnswerResult, BreakdownItem, DayDetail, DayItem, VideoSummary, LatencySummary, QueryRecord, RunRecord, Span, Timeline, VideoDetail, VideoItem } from "../lib/api";
 
 const now = Date.now() / 1000;
 
@@ -151,4 +151,33 @@ export const latencySummary: LatencySummary = {
   bottleneck: bd("speech", "Speech models", 300, 0.55, 76.1), llm_share: 0.2,
   queries: { count: 12, p50: 2.9, p95: 4.1, llm_p50: 2.7, database_p50: 0.04, embedding_p50: 0.15,
              breakdown: [bd("llm", "LLM", 30, 0.93)] },
+};
+
+// ---------- diary ----------
+export const vlogSummary: VideoSummary = {
+  video_id: "travel-vlog", date: "2026-11-04", duration: 624,
+  classification: { type: "vlog", confidence: "high", reason: "one person, many places" },
+  meeting: null,
+  vlog: {
+    title: "Morning at the farmers market",
+    overview: "Walked through the market and bought peaches.",
+    location: { value: "Berkeley", source: "inferred" },
+    activities: [
+      { time: "00:01:10", description: "Tasted peaches at the first stall" },
+      { time: "00:06:40", description: "Coffee with a friend" },
+    ],
+    action_items: [{ owner: null, task: "Make peach jam" }],
+  },
+};
+
+export const days: DayItem[] = [{ date: "2026-11-04", video_count: 2 }, { date: "2026-11-02", video_count: 1 }];
+
+export const day: DayDetail = {
+  date: "2026-11-04",
+  videos: [
+    { ...doneVideo, summary: meetingDetail.summary! },
+    { ...doneVideo, video_id: "travel-vlog", title: "Morning at the farmers market", type: "vlog", thumbnail: null,
+      summary: vlogSummary },
+  ],
+  markdown: "# Wednesday, November 4",
 };

@@ -212,8 +212,24 @@ h1, h2, h3 { margin: 0; line-height: 1.25; }
 .steps li.current { color: var(--accent-text); font-weight: 600; }
 
 
+/* ---------- diary ---------- */
+.journal-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 24px; align-items: start; }
+.day-list { padding: 8px; display: grid; gap: 2px; }
+.day-link { display: flex; justify-content: space-between; padding: 9px 12px; border-radius: 8px; }
+.day-link:hover { background: var(--bg); }
+.day-link.active { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+.day-heading { padding: 16px 18px; margin-bottom: 16px; }
+.day-heading p { margin: 4px 0 0; }
+.day-video { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 18px; padding: 18px; margin-bottom: 16px; }
+.day-thumb { width: 100%; }
+
+/* ---------- API key form ---------- */
+.key-form { max-width: 420px; padding: 24px; display: grid; gap: 12px; }
+.key-form h2 { display: flex; align-items: center; gap: 8px; font-size: 20px; }
+.key-form p { margin: 0; }
+
 @media (max-width: 1100px) {
-  .videos-grid, .video-layout { grid-template-columns: 1fr; }
+  .videos-grid, .video-layout, .journal-layout { grid-template-columns: 1fr; }
   .player-col { position: static; }
 }
 @media (max-width: 760px) {
@@ -222,6 +238,7 @@ h1, h2, h3 { margin: 0; line-height: 1.25; }
   .brand { padding: 0 8px 0 0; }
   .main { padding: 20px 16px 40px; }
   .video-row { grid-template-columns: 96px 1fr; }
+  .day-video { grid-template-columns: 1fr; }
   .thumb { width: 96px; }
   .status-cell, .row-actions { grid-column: 1 / -1; }
 }

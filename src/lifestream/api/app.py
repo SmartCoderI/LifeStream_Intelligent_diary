@@ -18,13 +18,23 @@
     GET    /api/videos/{id}/timeline    latency breakdown of the latest run (live while processing)
     GET    /api/latency/runs            run history with per-step timings
     GET    /api/latency/queries         recent Ask/Search queries with timings
+    GET    /api/days/{date}/summary     same as /api/days/{date}
+    GET    /api/config                  {mode: local | cloud, auth: bool} (no API key needed)
 
 Speaker names from the registry are applied to everything returned.
+
+Cloud mode (Stage 3, S3_BUCKET set): POST /api/videos takes JSON {date, filename} and returns
+{video_id, presigned_put_url, upload_headers}; the browser uploads straight to S3, which starts
+the GPU job (EventBridge -> Batch). POST /api/videos/{id}/uploaded marks the upload finished.
+Processing status comes from S3 (cloud/sync.py); /media redirects to a temporary S3 link.
+With API_KEY set, every /api route except /api/config needs it: X-API-Key header or the
+dashboard's `lifestream_key` cookie (so <img>/<video> requests carry it too). Otherwise 401.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import hmac
 import json
 import re
 import shutil
@@ -33,9 +43,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..config import Settings, get_settings
@@ -44,10 +54,20 @@ from ..memory.store import MemoryConfigError, MemoryUnavailable
 from ..processing.media import SUPPORTED_EXTENSIONS
 from ..timing import STEP_CATEGORIES, Timings, aggregate, append_log, category_of, read_log, run_stats
 from .jobs import STEP_LABELS, Job, JobQueue, ProcessFn, pre_processing_spans, read_status, write_status
+from ..cloud.sync import CloudStore, CloudSync
 
 VIDEO_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 KEYFRAME = re.compile(r"^frame_\d+\.jpg$")
 CHUNK = 1024 * 1024
+KEY_COOKIE = "lifestream_key"
+CLOUD_MAX_UPLOAD_BYTES = 5 * 1024**3  # one presigned PUT
+
+
+class UploadIn(BaseModel):
+    """Cloud upload request: the file itself goes straight to S3."""
+    date: str
+    filename: str
+    size_bytes: int | None = None
 
 
 class QueryIn(BaseModel):
@@ -122,7 +142,9 @@ def create_app(
     answer_fn: AnswerFn | None = None,
     index_fn: IndexFn | None = None,
     unindex_fn: UnindexFn | None = None,
+    cloud: CloudStore | None = None,
 ) -> FastAPI:
+    """`cloud`: S3/Batch access for cloud mode; by default created when S3_BUCKET is set."""
     settings = settings or get_settings()
     answer_fn = answer_fn or _default_answer(settings)
     index_fn = index_fn or _default_index
@@ -130,7 +152,9 @@ def create_app(
     out_root, uploads_dir = Path(out_root), Path(uploads_dir)
     out_root.mkdir(parents=True, exist_ok=True)
     uploads_dir.mkdir(parents=True, exist_ok=True)
-    jobs = JobQueue(out_root, settings, process_fn)
+    if cloud is None and settings.s3_bucket:
+        cloud = CloudStore.from_settings(settings)
+    jobs = CloudSync(out_root, settings, cloud, index_fn) if cloud else JobQueue(out_root, settings, process_fn)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -141,6 +165,23 @@ def create_app(
 
     app = FastAPI(title="LifeStream", lifespan=lifespan)
     app.state.jobs = jobs
+    app.state.cloud = cloud
+
+    if settings.api_key:
+        expected = settings.api_key.encode()
+
+        @app.middleware("http")
+        async def require_api_key(request: Request, call_next):
+            path = request.url.path
+            if path.startswith("/api/") and path != "/api/config":
+                given = request.headers.get("x-api-key") or request.cookies.get(KEY_COOKIE) or ""
+                if not hmac.compare_digest(given.encode(), expected):
+                    return JSONResponse({"detail": "Missing or wrong API key"}, status_code=401)
+            return await call_next(request)
+
+    @app.get("/api/config")
+    def get_config():
+        return {"mode": "cloud" if cloud else "local", "auth": bool(settings.api_key)}
 
     # ---------- helpers ----------
     def folder_for(video_id: str) -> Path:
@@ -220,26 +261,56 @@ def create_app(
     def list_videos():
         return sorted((item(f) for f in all_folders()), key=lambda v: -v["uploaded_at"])
 
+    def check_upload(date: str, filename: str | None) -> tuple[str, str, str]:
+        """Validate the date and file type; returns (file name, extension, new video ID)."""
+        try:
+            dt.date.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(400, "date must be YYYY-MM-DD")
+        name = Path(filename or "video").name
+        ext = Path(name).suffix.lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            raise HTTPException(400, f"Unsupported file type '{ext or name}'. "
+                                     f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
+        base = re.sub(r"[^a-z0-9]+", "-", Path(name).stem.lower()).strip("-")[:48].strip("-") or "video"
+        video_id, n = base, 2
+        while (out_root / video_id).exists():
+            video_id, n = f"{base}-{n}", n + 1
+        return name, ext, video_id
+
+    if cloud:
+        @app.post("/api/videos", status_code=201)
+        def upload_video_cloud(body: UploadIn):
+            """upload_video (cloud): returns a presigned S3 PUT link. The browser must send
+            `upload_headers` with the PUT (they carry the recording date as S3 metadata)."""
+            name, ext, video_id = check_upload(body.date, body.filename)
+            if body.size_bytes is not None and not 0 < body.size_bytes <= CLOUD_MAX_UPLOAD_BYTES:
+                raise HTTPException(413 if body.size_bytes else 400,
+                                    "The file is empty" if not body.size_bytes else "File is larger than 5 GB")
+            key = cloud.upload_key(video_id, ext)
+            url, headers = cloud.presign_upload(key, body.date)
+            now = time.time()
+            write_status(out_root / video_id, status="queued", step="uploading", progress=0, error=None,
+                         original_name=name, size_bytes=body.size_bytes, created_at=now, date=body.date,
+                         s3_key=key, upload_started_at=now, uploaded_at=None, queued_at=None)
+            return {**item(out_root / video_id), "presigned_put_url": url, "upload_headers": headers}
+
+        @app.post("/api/videos/{video_id}/uploaded", status_code=202)
+        def upload_finished(video_id: str):
+            """The browser's PUT finished; the GPU job starts on its own (EventBridge)."""
+            folder = folder_for(video_id)
+            if read_status(folder).get("step") == "uploading":
+                now = time.time()
+                write_status(folder, step="queued", uploaded_at=now, queued_at=now)
+            return item(folder)
+
     @app.post("/api/videos", status_code=202)
     def upload_video(file: UploadFile = File(...), date: str = Form(...),
                      client_started_at: float | None = Form(None)):
         """`client_started_at`: when the browser started sending (epoch ms), for the
         upload span of the latency timeline. The body is fully received before this runs."""
         received_at = time.time()
-        try:
-            dt.date.fromisoformat(date)
-        except ValueError:
-            raise HTTPException(400, "date must be YYYY-MM-DD")
-        name = Path(file.filename or "video").name
-        ext = Path(name).suffix.lower()
-        if ext not in SUPPORTED_EXTENSIONS:
-            raise HTTPException(400, f"Unsupported file type '{ext or name}'. "
-                                     f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
-
-        base = re.sub(r"[^a-z0-9]+", "-", Path(name).stem.lower()).strip("-")[:48].strip("-") or "video"
-        video_id, n = base, 2
-        while (out_root / video_id).exists():
-            video_id, n = f"{base}-{n}", n + 1
+        name, ext, video_id = check_upload(date, file.filename)
 
         dest = uploads_dir / f"{video_id}{ext}"
         size = 0
@@ -283,8 +354,11 @@ def create_app(
 
     @app.get("/api/videos/{video_id}/status")
     def get_status(video_id: str):
-        v = item(folder_for(video_id))
-        return {k: v[k] for k in ("video_id", "status", "step", "step_label", "progress", "error")}
+        folder = folder_for(video_id)
+        v = item(folder)
+        timings = read_status(folder).get("step_timings") or _read_json(folder / "timings.json") or {}
+        return {**{k: v[k] for k in ("video_id", "status", "step", "step_label", "progress", "error", "type")},
+                "step_timings": timings}
 
     @app.get("/api/videos/{video_id}/summary")
     def get_summary(video_id: str):
@@ -298,7 +372,11 @@ def create_app(
 
     @app.get("/api/videos/{video_id}/media")
     def get_media(video_id: str):
-        path = video_path(folder_for(video_id))
+        folder = folder_for(video_id)
+        key = read_status(folder).get("s3_key")
+        if cloud and key:
+            return RedirectResponse(cloud.presign_download(key), status_code=307)
+        path = video_path(folder)
         if path is None or not path.exists():
             raise HTTPException(404, "Video file not found")
         return FileResponse(path)
@@ -313,10 +391,19 @@ def create_app(
     @app.post("/api/videos/{video_id}/retry", status_code=202)
     def retry_video(video_id: str):
         folder = folder_for(video_id)
-        if read_status(folder).get("status") in ("queued", "processing"):
+        status = read_status(folder)
+        if status.get("status") in ("queued", "processing"):
             raise HTTPException(409, "This video is already being processed")
-        path = video_path(folder)
         date = item(folder)["date"]
+        if cloud and status.get("s3_key"):
+            if not status.get("uploaded_at") or not date:
+                raise HTTPException(409, "The upload didn't finish; upload the video again")
+            cloud.clear_worker_status(video_id)
+            job_id = cloud.submit_job(video_id, status["s3_key"], date)
+            write_status(folder, status="queued", step="queued", progress=0, error=None, job_id=job_id,
+                         queued_at=time.time(), started_at=None, step_started_at=None, finished_at=None)
+            return item(folder)
+        path = video_path(folder)
         if path is None or not path.exists() or not date:
             raise HTTPException(409, "The original video file is missing; upload it again")
         jobs.submit(Job(video_id, path.resolve(), date))
@@ -399,9 +486,12 @@ def create_app(
     @app.delete("/api/videos/{video_id}", status_code=204)
     def delete_video(video_id: str):
         folder = folder_for(video_id)
-        state = read_status(folder).get("status")
-        if state in ("queued", "processing"):
+        status = read_status(folder)
+        # an upload the browser never finished can be deleted (nothing is processing it)
+        if status.get("status") in ("queued", "processing") and status.get("step") != "uploading":
             raise HTTPException(409, "Can't delete a video while it is being processed")
+        if cloud and read_status(folder).get("s3_key"):
+            cloud.delete_video(video_id)
         path = video_path(folder)
         # only delete files we own (uploads), never the user's original files elsewhere
         if path and path.exists() and path.resolve().parent == uploads_dir.resolve():
@@ -432,6 +522,7 @@ def create_app(
         return [{"date": d, "video_count": c} for d, c in sorted(counts.items(), reverse=True)]
 
     @app.get("/api/days/{date}")
+    @app.get("/api/days/{date}/summary")
     def get_day(date: str):
         try:
             dt.date.fromisoformat(date)

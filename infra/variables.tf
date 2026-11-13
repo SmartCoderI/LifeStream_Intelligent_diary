@@ -93,3 +93,35 @@ variable "offline_plan" {
   type        = bool
   default     = false
 }
+
+# ---------- Stage 3: dashboard server ----------
+
+variable "server_instance_type" {
+  description = "Dashboard server (API + web app + search database). Graviton t4g.small: 2 vCPU, 2 GiB, about $12/month."
+  type        = string
+  default     = "t4g.small"
+}
+
+variable "server_volume_gib" {
+  description = "Dashboard server disk: Docker images, the search database and processed results."
+  type        = number
+  default     = 30
+}
+
+variable "server_ami_id" {
+  description = "AMI for the dashboard server. Null = the latest Amazon Linux 2023 (arm64); set it to plan without credentials (tests)."
+  type        = string
+  default     = null
+}
+
+variable "cloudfront_prefix_list_id" {
+  description = "Managed prefix list of CloudFront's origin-facing IPs. Null = look it up; set it to plan without credentials (tests)."
+  type        = string
+  default     = null
+}
+
+variable "extra_cors_origins" {
+  description = "Other web origins allowed to upload straight to S3 (e.g. http://localhost:5173 for development)."
+  type        = list(string)
+  default     = []
+}

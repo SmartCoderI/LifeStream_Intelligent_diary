@@ -44,3 +44,22 @@ output "build_project" {
 output "image_tag" {
   value = var.image_tag
 }
+
+# ---------- Stage 3 ----------
+
+output "dashboard_url" {
+  description = "The deployed dashboard (HTTPS)."
+  value       = "https://${aws_cloudfront_distribution.dashboard.domain_name}"
+}
+
+output "server_instance_id" {
+  value = aws_instance.server.id
+}
+
+output "api_key_parameter_name" {
+  value = aws_ssm_parameter.api_key.name
+}
+
+output "server_source_key" {
+  value = local.server_source_key
+}

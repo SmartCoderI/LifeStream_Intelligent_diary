@@ -1,11 +1,10 @@
 import { CloudUpload, FileVideo, X } from "lucide-react";
-import { useRef, useState } from "react";
-import { api, type VideoItem } from "../../lib/api";
+import { useEffect, useRef, useState } from "react";
+import { api, loadConfig, MAX_UPLOAD_BYTES, type VideoItem } from "../../lib/api";
 import { fileSize, todayIso } from "../../lib/format";
 import { ProgressBar } from "./StatusBadge";
 
 const ACCEPT = ".mp4,.mov,.mkv,.m4v,.webm,.avi";
-const MAX_BYTES = 1024 ** 3;
 
 export default function UploadCard({ onUploaded }: { onUploaded: (v: VideoItem) => void }) {
   const [file, setFile] = useState<File | null>(null);
@@ -14,13 +13,16 @@ export default function UploadCard({ onUploaded }: { onUploaded: (v: VideoItem) 
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
+  const [maxBytes, setMaxBytes] = useState(MAX_UPLOAD_BYTES.local);
+  useEffect(() => { loadConfig().then((c) => setMaxBytes(MAX_UPLOAD_BYTES[c.mode])); }, []);
+  const maxLabel = `${maxBytes / 1024 ** 3} GB`;
 
   const choose = (f: File | undefined | null) => {
     setError(null);
     if (!f) return;
     const ext = f.name.slice(f.name.lastIndexOf(".")).toLowerCase();
     if (!ACCEPT.split(",").includes(ext)) return setError(`"${f.name}" is not a supported video type.`);
-    if (f.size > MAX_BYTES) return setError(`"${f.name}" is larger than 1 GB.`);
+    if (f.size > maxBytes) return setError(`"${f.name}" is larger than ${maxLabel}.`);
     setFile(f);
   };
 
@@ -53,7 +55,7 @@ export default function UploadCard({ onUploaded }: { onUploaded: (v: VideoItem) 
         <CloudUpload size={44} className="upload-icon" />
         <h2>Upload a Video</h2>
         <div className="muted">Drag and drop or click to select</div>
-        <div className="muted">MP4, MOV, MKV (up to 1 GB)</div>
+        <div className="muted">MP4, MOV, MKV (up to {maxLabel})</div>
       </div>
       <input ref={input} type="file" accept={ACCEPT} hidden aria-label="Video file"
              onChange={(e) => choose(e.target.files?.[0])} />

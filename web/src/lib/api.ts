@@ -112,6 +112,43 @@ export interface QueryRecord {
 }
 export interface SearchStatus { available: boolean; videos: number; chunks: number; error: string | null }
 
+export interface DayItem { date: string; video_count: number }
+export interface DayDetail { date: string; videos: (VideoItem & { summary: VideoSummary })[]; markdown: string | null }
+
+/** Cloud mode (Stage 3): uploads go straight to S3 and processing runs on a cloud GPU. */
+export interface AppConfig { mode: "local" | "cloud"; auth: boolean }
+interface CloudUpload extends VideoItem { presigned_put_url: string; upload_headers: Record<string, string> }
+
+export class AuthError extends Error {}
+
+export const MAX_UPLOAD_BYTES = { local: 1024 ** 3, cloud: 5 * 1024 ** 3 };
+
+const KEY_COOKIE = "lifestream_key";
+
+/** The API key travels as a cookie so <img> and <video> requests carry it too. */
+export function saveApiKey(key: string) {
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `${KEY_COOKIE}=${encodeURIComponent(key)}; path=/; max-age=31536000; SameSite=Strict${secure}`;
+}
+
+let configPromise: Promise<AppConfig> | null = null;
+
+/** Loaded once per page load. */
+export function loadConfig(): Promise<AppConfig> {
+  configPromise ??= fetch("/api/config")
+    .then((r) => (r.ok ? r.json() : { mode: "local", auth: false }))
+    .catch(() => ({ mode: "local", auth: false }));
+  return configPromise;
+}
+
+/** Tests only. */
+export function resetConfig() { configPromise = null; }
+
+function fail(status: number, detail: string | undefined, fallback: string): never {
+  if (status === 401) throw new AuthError(detail || "API key required");
+  throw new Error(detail || fallback);
+}
+
 export interface VideoDetail extends VideoItem {
   summary: VideoSummary | null;
   script: ScriptSegment[];
@@ -125,7 +162,7 @@ async function get<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `${res.status} ${res.statusText}`);
+    fail(res.status, body.detail, `${res.status} ${res.statusText}`);
   }
   return res.json();
 }
@@ -135,8 +172,22 @@ async function send<T>(method: string, url: string, body: unknown): Promise<T> {
     method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || `${res.status} ${res.statusText}`);
+  if (!res.ok) fail(res.status, data.detail, `${res.status} ${res.statusText}`);
   return data as T;
+}
+
+/** XHR (not fetch) so the upload can report progress. */
+function xhrUpload(method: string, url: string, body: Document | XMLHttpRequestBodyInit,
+                   headers: Record<string, string>, onProgress: (f: number) => void): Promise<XMLHttpRequest> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url);
+    for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value);
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    xhr.onload = () => resolve(xhr);
+    xhr.onerror = () => reject(new Error("Upload failed: can't reach the server"));
+    xhr.send(body);
+  });
 }
 
 export const api = {
@@ -150,6 +201,8 @@ export const api = {
   latencySummary: (limit = 20) => get<LatencySummary>(`/api/latency/summary?limit=${limit}`),
 
   ask: (question: string) => send<AnswerResult>("POST", "/api/query", { question }),
+  listDays: () => get<DayItem[]>("/api/days"),
+  getDay: (date: string) => get<DayDetail>(`/api/days/${date}`),
 
   setSpeakers: (id: string, names: Record<string, string>) =>
     send<{ speakers: SpeakerStat[]; indexed: boolean; index_error: string | null }>(
@@ -171,24 +224,24 @@ export const api = {
     }
   },
 
-  /** Upload with progress (fetch can't report upload progress, XHR can). */
-  uploadVideo(file: File, date: string, onProgress: (fraction: number) => void): Promise<VideoItem> {
-    return new Promise((resolve, reject) => {
-      const form = new FormData();
-      form.append("file", file);
-      form.append("date", date);
-      form.append("client_started_at", String(Date.now()));  // upload span of the latency timeline
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", "/api/videos");
-      xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
-      xhr.onload = () => {
-        let body: any = {};
-        try { body = JSON.parse(xhr.responseText); } catch { /* not JSON */ }
-        if (xhr.status >= 200 && xhr.status < 300) resolve(body);
-        else reject(new Error(body.detail || `Upload failed (${xhr.status})`));
-      };
-      xhr.onerror = () => reject(new Error("Upload failed: can't reach the server"));
-      xhr.send(form);
-    });
+  /** Upload with progress. Local: the file goes to this server. Cloud: the server returns a
+   *  presigned S3 link, the file goes straight to S3, and the GPU job starts on its own. */
+  async uploadVideo(file: File, date: string, onProgress: (fraction: number) => void): Promise<VideoItem> {
+    const config = await loadConfig();
+    if (config.mode === "cloud") {
+      const video = await send<CloudUpload>("POST", "/api/videos", { date, filename: file.name, size_bytes: file.size });
+      const put = await xhrUpload("PUT", video.presigned_put_url, file, video.upload_headers, onProgress);
+      if (put.status < 200 || put.status >= 300) throw new Error(`Upload to storage failed (${put.status})`);
+      return send<VideoItem>("POST", `/api/videos/${video.video_id}/uploaded`, {});
+    }
+    const form = new FormData();
+    form.append("file", file);
+    form.append("date", date);
+    form.append("client_started_at", String(Date.now()));  // upload span of the latency timeline
+    const xhr = await xhrUpload("POST", "/api/videos", form, {}, onProgress);
+    let body: any = {};
+    try { body = JSON.parse(xhr.responseText); } catch { /* not JSON */ }
+    if (xhr.status < 200 || xhr.status >= 300) fail(xhr.status, body.detail, `Upload failed (${xhr.status})`);
+    return body;
   },
 };
