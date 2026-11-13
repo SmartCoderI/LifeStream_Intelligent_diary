@@ -65,7 +65,7 @@ UnindexFn = Callable[[str, Settings], None]
 
 def _default_answer(settings: Settings) -> AnswerFn:
     def answer(question: str, timings: Timings) -> dict:
-        from ..intelligence.llm import AnthropicLLM
+        from ..intelligence.llm import make_llm
         from ..memory.answer import answer_question
         from ..memory.indexer import open_store
 
@@ -78,9 +78,9 @@ def _default_answer(settings: Settings) -> AnswerFn:
             span["meta"]["cold"] = cold
         with timings.step("connect.db", "Connect to database"):
             store = open_store(settings)
-        timings.meta["config"] = {"llm_model": settings.llm_model, "embed_model": settings.embed_model}
+        timings.meta["config"] = {"llm_model": settings.active_llm_model, "embed_model": settings.embed_model}
         with store:
-            result = answer_question(question, store, AnthropicLLM(settings.llm_model),
+            result = answer_question(question, store, make_llm(settings),
                                      dt.date.today(), settings.search_k, timings=timings)
         return result.model_dump(mode="json")
     return answer

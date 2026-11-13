@@ -27,7 +27,7 @@ from pydantic import TypeAdapter
 from .intelligence import summarize
 from .processing import asr, diarize, media, merge, scenes, sync
 from .config import Settings
-from .intelligence.llm import AnthropicLLM, LLMClient
+from .intelligence.llm import LLMClient, make_llm
 from .memory.registry import SpeakerRegistry, apply_names
 from .schemas import Keyframe, Scene, ScriptSegment, SpeakerSegment, VideoSummary, Word
 from .timing import Timings, append_log
@@ -139,7 +139,7 @@ def _run_steps(video: Path, date: str, out_root: Path, out: Path, vid: str, sett
     timings.meta["config"] = {
         "device": settings.device, "whisper_model": settings.whisper_model,
         "compute_type": settings.compute_type, "diarization_device": settings.diarization_device,
-        "llm_model": settings.llm_model if run_llm else None, "embed_model": settings.embed_model,
+        "llm_model": settings.active_llm_model if run_llm else None, "embed_model": settings.embed_model,
     }
 
     # ---- F1: validate + metadata + audio ----
@@ -253,16 +253,17 @@ def _run_steps(video: Path, date: str, out_root: Path, out: Path, vid: str, sett
 
     # ---- F6 classify + summarize ----
     if run_llm:
-        llm = llm or AnthropicLLM(settings.llm_model)
+        llm = llm or make_llm(settings)  # Qwen or Claude, per LLM_PROVIDER
+        llm_name = getattr(llm, "name", "LLM")
         step("classifying")
         log(f"[{vid}] classifying...")
-        with timings.step("classify", "Classify meeting / vlog (Claude)", kind="llm") as span:
+        with timings.step("classify", f"Classify meeting / vlog ({llm_name})", kind="llm") as span:
             classification = summarize.classify(
                 llm, segments, keyframes, out, info.duration, window_s=settings.classify_window_s)
             span["meta"].update(getattr(llm, "last_usage", None) or {}, result=classification.type)
         step("summarizing")
         log(f"[{vid}] type: {classification.type} ({classification.confidence}); summarizing...")
-        with timings.step("summarize", f"Write {classification.type} summary (Claude)", kind="llm") as span:
+        with timings.step("summarize", f"Write {classification.type} summary ({llm_name})", kind="llm") as span:
             body = summarize.summarize(llm, classification.type, segments, keyframes, out,
                                        info.duration, effort=settings.llm_effort)
             span["meta"].update(getattr(llm, "last_usage", None) or {})

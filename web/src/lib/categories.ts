@@ -7,7 +7,7 @@ export const CATEGORY_ORDER: Category[] = [
 
 export const CATEGORY_HELP: Record<Category, string> = {
   speech: "Transcription, word alignment and speaker identification (WhisperX, pyannote)",
-  llm: "Claude calls: classification, summaries, answers",
+  llm: "LLM calls (Qwen or Claude): classification, summaries, answers",
   model_loading: "Loading ML models into memory (Whisper, pyannote, embedding model)",
   media: "FFmpeg / ffprobe work and scene detection",
   embedding: "Turning text into vectors for search",

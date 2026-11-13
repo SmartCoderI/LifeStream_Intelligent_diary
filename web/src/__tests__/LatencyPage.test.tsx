@@ -5,13 +5,13 @@ import { processingVideo } from "./fixtures";
 import { renderAt } from "./render";
 import { server } from "./server";
 
-test("headline numbers: speed, bottleneck, Claude share, query latency", async () => {
+test("headline numbers: speed, bottleneck, LLM share, query latency", async () => {
   renderAt("/latency");
   expect(await screen.findByText("2.35×")).toBeInTheDocument();
   const bottleneck = screen.getByText("Bottleneck", { selector: ".kpi-label" }).parentElement!;
   expect(bottleneck).toHaveTextContent("Speech models");
   expect(bottleneck).toHaveTextContent("55% of processing time");
-  expect(screen.getByText("Claude share", { selector: ".kpi-label" }).parentElement).toHaveTextContent("20%");
+  expect(screen.getByText("LLM share", { selector: ".kpi-label" }).parentElement).toHaveTextContent("20%");
   expect(screen.getByText("Ask / Search", { selector: ".kpi-label" }).parentElement)
     .toHaveTextContent("p50 · p95 4.10 s · 12 queries");
   expect(screen.getByText(/Last 3 full runs · CPU · medium.en int8 · claude-opus-5-5/)).toBeInTheDocument();
@@ -26,7 +26,7 @@ test("where the time goes: ranked categories with share and time per video minut
   expect(rows[0]).toHaveTextContent("Speech models");
   expect(rows[0]).toHaveTextContent("55%");
   expect(rows[0]).toHaveTextContent("1 min 16 s / video min");
-  expect(rows[1]).toHaveTextContent("Claude");
+  expect(rows[1]).toHaveTextContent("LLM");
 });
 
 test("runs table is concise and a run's steps are behind a toggle", async () => {
@@ -50,14 +50,14 @@ test("runs table is concise and a run's steps are behind a toggle", async () => 
   expect(screen.getByText("Failed: model crashed")).toBeInTheDocument();
 });
 
-test("query table splits Claude, database and embedding time", async () => {
+test("query table splits LLM, database and embedding time", async () => {
   renderAt("/latency");
   await screen.findByText("Runs");
   const table = document.querySelectorAll<HTMLElement>("table.latency-table")[1];
   const row = within(table).getAllByRole("row")[1];
   expect(row).toHaveTextContent("frontend last week");
   expect(row).toHaveTextContent("3.40 s");   // total
-  expect(row).toHaveTextContent("3.20 s");   // Claude
+  expect(row).toHaveTextContent("3.20 s");   // LLM
   expect(row).toHaveTextContent("40 ms");    // database
   expect(row).toHaveTextContent("150 ms");   // embedding
 });
@@ -90,6 +90,6 @@ test("hovering a breakdown segment explains the category", async () => {
   await screen.findByText("Where the time goes");
   const seg = document.querySelector<HTMLElement>(".overview .bd-seg.cat-llm")!;
   await userEvent.hover(seg);
-  expect(screen.getByRole("tooltip")).toHaveTextContent("Claude · 20%");
-  expect(screen.getByRole("tooltip")).toHaveTextContent("Claude calls");
+  expect(screen.getByRole("tooltip")).toHaveTextContent("LLM · 20%");
+  expect(screen.getByRole("tooltip")).toHaveTextContent("LLM calls");
 });

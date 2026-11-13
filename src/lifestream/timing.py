@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 # kinds: io (upload, queue, saving), step (normal work), load (loading a model),
-#        llm (a call to Claude), cached (reused a saved result)
+#        llm (a call to the LLM: Qwen or Claude), cached (reused a saved result)
 SpanKind = str
 
 
@@ -115,7 +115,7 @@ class Timings:
 # Every span maps to exactly one category. Order = display order = chart color order.
 CATEGORIES = {
     "speech": "Speech models",
-    "llm": "Claude",
+    "llm": "LLM",
     "model_loading": "Model loading",
     "media": "Media (FFmpeg)",
     "embedding": "Embedding",

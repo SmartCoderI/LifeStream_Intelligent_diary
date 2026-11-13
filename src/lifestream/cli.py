@@ -177,7 +177,7 @@ def ask(
     show_sources: bool = typer.Option(True),
 ):
     """Ask a question about your videos (F9)."""
-    from .intelligence.llm import AnthropicLLM
+    from .intelligence.llm import make_llm
     from .memory.answer import answer_question
     from .timing import Timings, fmt_ts
 
@@ -190,7 +190,7 @@ def ask(
     with timings.step("connect.db", "Connect to database"):
         store = _store_or_exit()
     with store:
-        result = answer_question(question, store, AnthropicLLM(settings.llm_model), day, settings.search_k,
+        result = answer_question(question, store, make_llm(settings), day, settings.search_k,
                                  timings=timings)
     tl = timings.finish()
     if result.date_from:

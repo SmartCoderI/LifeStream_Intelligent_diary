@@ -4,7 +4,7 @@ import { CATEGORY_ORDER } from "../../lib/categories";
 import { clockTime, compactNumber, duration } from "../../lib/format";
 
 const CATEGORY_LABELS: Record<Category, string> = {
-  speech: "Speech models", llm: "Claude", model_loading: "Model loading", media: "Media (FFmpeg)",
+  speech: "Speech models", llm: "LLM", model_loading: "Model loading", media: "Media (FFmpeg)",
   embedding: "Embedding", database: "Database", upload_queue: "Upload & queue", other: "Other",
 };
 const cat = (s: Span): Category => s.category ?? "other";
@@ -35,7 +35,7 @@ export function metaText(span: Span): string {
   }
   if (typeof m.bytes === "number") parts.push(`${(Number(m.bytes) / 1024 ** 2).toFixed(1)} MB`);
   if (typeof m.result === "string") parts.push(m.result);
-  if (m.llm_used === true) parts.push("used Claude");
+  if (m.llm_used === true) parts.push("used the LLM");
   if (m.cold === true) parts.push("cold");
   if (m.cold === false) parts.push("warm");
   return parts.join(" · ");

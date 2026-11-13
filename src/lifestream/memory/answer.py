@@ -92,7 +92,7 @@ def answer_question(
     excerpts = "\n\n".join(
         f"[{i}] {h.title} | {h.date} | {h.section} | {fmt_ts(h.start)}-{fmt_ts(h.end)}\n{_snippet(h, 2000)}"
         for i, h in enumerate(hits, 1))
-    with step("answer", "Write answer (Claude)", "llm") as span:
+    with step("answer", f"Write answer ({getattr(llm, 'name', 'LLM')})", "llm") as span:
         result = llm.parse(
             system=ANSWER_SYSTEM,
             content=[{"type": "text", "text": f"Excerpts:\n\n{excerpts}\n\nQuestion: {question}"}],

@@ -1,6 +1,17 @@
 """F2: speaker diarization ("who spoke when") with pyannote.
 
 Acoustic models only. No LLM is involved in deciding who is speaking.
+
+FUTURE (after moving to AWS with an NVIDIA GPU): consider NVIDIA's
+`nvidia/Nemotron-3-Diarization` (released 2026-09, ~100M params, OpenMDW 1.1, commercial use OK).
+  * Why: lower reported error on meeting audio, especially overlapping speech
+    (NVIDIA's numbers, e.g. AMI single-mic DER 11.14%; no direct comparison with pyannote).
+  * Why not now: built for NVIDIA GPUs on Linux; needs NeMo 3.0 and Python >= 3.12
+    (this project is on 3.11, and NeMo's PyTorch may clash with WhisperX). Max 8 speakers.
+  * How to switch: add a DIARIZATION_BACKEND setting (pyannote | nemotron), the same way
+    LLM_PROVIDER picks the LLM, and a second function here that returns the same
+    list[SpeakerSegment] ("speaker X from A to B"). merge.py and everything after it stay as-is.
+  * Before deciding: run the M1 evaluation (labels/) with both backends on our own videos.
 """
 
 from __future__ import annotations

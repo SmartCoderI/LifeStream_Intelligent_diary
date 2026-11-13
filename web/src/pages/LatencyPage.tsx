@@ -70,7 +70,7 @@ export default function LatencyPage() {
             note: "time per second of video (median)" },
           { label: "Bottleneck", value: s.bottleneck?.label ?? "–",
             note: s.bottleneck ? `${pct(s.bottleneck.share)} of processing time` : undefined, tone: "warn" },
-          { label: "Claude share", value: pct(s.llm_share), note: "of processing time" },
+          { label: "LLM share", value: pct(s.llm_share), note: "of processing time" },
           { label: "Ask / Search", value: q.p50 != null ? duration(q.p50) : "–",
             note: q.count ? `p50 · p95 ${duration(q.p95)} · ${q.count} queries` : "no queries yet" },
         ]} />
@@ -131,7 +131,7 @@ export default function LatencyPage() {
             <div className="table-wrap">
               <table className="latency-table">
                 <thead><tr>
-                  <th>When</th><th>Question</th><th className="num">Total</th><th className="num">Claude</th>
+                  <th>When</th><th>Question</th><th className="num">Total</th><th className="num">LLM</th>
                   <th className="num">Database</th><th className="num">Embedding</th>
                 </tr></thead>
                 <tbody>

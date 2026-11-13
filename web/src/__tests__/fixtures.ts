@@ -93,7 +93,7 @@ const span = (name: string, label: string, kind: Span["kind"], start: number, en
 });
 const bd = (category: BreakdownItem["category"], label: string, seconds: number, share: number,
             per_video_minute?: number): BreakdownItem => ({ category, label, seconds, share, per_video_minute });
-const runBreakdown = [bd("speech", "Speech models", 50, 0.417), bd("llm", "Claude", 30, 0.25),
+const runBreakdown = [bd("speech", "Speech models", 50, 0.417), bd("llm", "LLM", 30, 0.25),
   bd("model_loading", "Model loading", 10, 0.083), bd("upload_queue", "Upload & queue", 5, 0.042),
   bd("other", "Other", 25, 0.208)];
 const config = { device: "cpu", whisper_model: "medium.en", compute_type: "int8", llm_model: "claude-opus-5-5" };
@@ -140,15 +140,15 @@ export const queries: QueryRecord[] = [{
   spans: [span("parse", "Read time phrase", "step", 500, 500.01), span("search", "Search index", "step", 500.01, 500.2),
           span("answer", "Write answer (Claude)", "llm", 500.2, 503.4, { meta: { input_tokens: 2100, output_tokens: 180 } })],
   stats: { ...doneTimeline.stats!, total: 3.4, input_tokens: 2100, output_tokens: 180,
-           breakdown: [bd("llm", "Claude", 3.2, 0.94), bd("database", "Database", 0.04, 0.012),
+           breakdown: [bd("llm", "LLM", 3.2, 0.94), bd("database", "Database", 0.04, 0.012),
                        bd("embedding", "Embedding", 0.15, 0.044)] },
 }];
 
 export const latencySummary: LatencySummary = {
   runs: 3, runs_skipped: 1, config, speed_median: 2.35, total_median: 171,
-  breakdown: [bd("speech", "Speech models", 300, 0.55, 76.1), bd("llm", "Claude", 109, 0.2, 27.6),
+  breakdown: [bd("speech", "Speech models", 300, 0.55, 76.1), bd("llm", "LLM", 109, 0.2, 27.6),
               bd("model_loading", "Model loading", 44, 0.08, 11.2), bd("other", "Other", 92, 0.17, 23.3)],
   bottleneck: bd("speech", "Speech models", 300, 0.55, 76.1), llm_share: 0.2,
   queries: { count: 12, p50: 2.9, p95: 4.1, llm_p50: 2.7, database_p50: 0.04, embedding_p50: 0.15,
-             breakdown: [bd("llm", "Claude", 30, 0.93)] },
+             breakdown: [bd("llm", "LLM", 30, 0.93)] },
 };

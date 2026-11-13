@@ -26,6 +26,8 @@ class Settings:
     asr_batch_size: int = field(default_factory=lambda: int(_env("ASR_BATCH_SIZE", "8")))
 
     # Diarization (pyannote, acoustic only).
+    # On a GPU server, nvidia/Nemotron-3-Diarization is a candidate replacement; see the note at the
+    # top of processing/diarize.py.
     hf_token: str | None = field(default_factory=lambda: _env("HF_TOKEN"))
     diarization_model: str = field(
         default_factory=lambda: _env("DIARIZATION_MODEL", "pyannote/speaker-diarization-community-1")
@@ -38,9 +40,23 @@ class Settings:
     max_keyframes: int = field(default_factory=lambda: int(_env("MAX_KEYFRAMES", "20")))
     keyframe_width: int = field(default_factory=lambda: int(_env("KEYFRAME_WIDTH", "768")))
 
-    # LLM (classification + summaries).
+    # LLM (classification, summaries, answers). LLM_PROVIDER picks which one runs:
+    #   claude -> Claude via the Anthropic API (LLM_MODEL, LLM_EFFORT, ANTHROPIC_API_KEY)
+    #   qwen   -> currently commented out in intelligence/llm.py make_llm()
+    llm_provider: str = field(default_factory=lambda: _env("LLM_PROVIDER", "claude"))
+
+    # Claude (the active LLM).
     llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "claude-opus-5-5"))
     llm_effort: str = field(default_factory=lambda: _env("LLM_EFFORT", "medium"))
+
+    # Qwen (inactive: see make_llm). Needs a vision model: classify and summarize send keyframes.
+    # Default: Alibaba Cloud Model Studio (international). Local Ollama: http://localhost:11434/v1
+    qwen_model: str = field(default_factory=lambda: _env("QWEN_MODEL", "qwen3-vl-plus"))
+    qwen_base_url: str = field(default_factory=lambda: _env(
+        "QWEN_BASE_URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"))
+    qwen_api_key: str | None = field(default_factory=lambda: _env("QWEN_API_KEY", _env("DASHSCOPE_API_KEY")))
+    qwen_max_tokens: int = field(default_factory=lambda: int(_env("QWEN_MAX_TOKENS", "8192")))
+    qwen_json_mode: bool = field(default_factory=lambda: _env("QWEN_JSON_MODE", "true").lower() != "false")
     classify_window_s: float = field(default_factory=lambda: float(_env("CLASSIFY_WINDOW_S", "300")))
 
     # Memory (Stage 2): Postgres + pgvector, local embeddings, speaker names.
@@ -49,6 +65,12 @@ class Settings:
     embed_model: str = field(default_factory=lambda: _env("EMBED_MODEL", "BAAI/bge-small-en-v1.5"))
     speakers_file: str = field(default_factory=lambda: _env("SPEAKERS_FILE", "data/speakers.yaml"))
     search_k: int = field(default_factory=lambda: int(_env("SEARCH_K", "6")))
+
+
+    @property
+    def active_llm_model(self) -> str:
+        """Model name of the LLM that LLM_PROVIDER selects (recorded in run timelines)."""
+        return self.qwen_model if self.llm_provider.lower() == "qwen" else self.llm_model
 
 
 def get_settings() -> Settings:

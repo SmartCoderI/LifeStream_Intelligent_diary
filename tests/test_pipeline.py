@@ -76,7 +76,7 @@ def test_timeline_has_every_step_with_llm_details(format_samples, tmp_path):
         assert name in names, name
     classify = next(s for s in tl["spans"] if s["name"] == "classify")
     assert classify["kind"] == "llm" and classify["meta"]["input_tokens"] == 1200
-    assert classify["label"] == "Classify meeting / vlog (Claude)"
+    assert classify["label"] == "Classify meeting / vlog (LLM)"
     assert all(s["end"] >= s["start"] for s in tl["spans"])
     runs = (tmp_path / "_logs" / "runs.jsonl").read_text().splitlines()
     assert len(runs) == 1 and json.loads(runs[0])["video_id"] == folder.name
