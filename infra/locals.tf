@@ -43,7 +43,12 @@ locals {
   log_group_name = "/aws/batch/${var.project}-worker"
   log_group_arn  = "arn:${local.partition}:logs:${var.region}:${local.account_id}:log-group:${local.log_group_name}"
 
-  # Secrets Manager adds a random 6-character suffix to secret ARNs.
-  anthropic_secret_name = "${var.project}/anthropic-api-key"
-  anthropic_secret_arn  = "arn:${local.partition}:secretsmanager:${var.region}:${local.account_id}:secret:${local.anthropic_secret_name}-??????"
+  hf_param_name = "/${var.project}/hf-token"
+  hf_param_arn  = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.hf_param_name}"
+
+  build_log_group_name = "/aws/codebuild/${var.project}-worker-image"
+  build_log_group_arn  = "arn:${local.partition}:logs:${var.region}:${local.account_id}:log-group:${local.build_log_group_name}"
+
+  anthropic_param_name = "/${var.project}/anthropic-api-key"
+  anthropic_param_arn  = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.anthropic_param_name}"
 }

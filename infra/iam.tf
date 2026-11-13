@@ -45,8 +45,8 @@ data "aws_iam_policy_document" "execution" {
   }
   statement {
     sid       = "ReadAnthropicKey"
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = [local.anthropic_secret_arn]
+    actions   = ["ssm:GetParameters"] # SecureString with the AWS-managed key: no kms permission needed
+    resources = [local.anthropic_param_arn]
   }
 }
 

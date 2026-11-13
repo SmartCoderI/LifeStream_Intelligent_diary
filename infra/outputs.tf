@@ -33,6 +33,14 @@ output "log_group" {
   value = aws_cloudwatch_log_group.worker.name
 }
 
-output "anthropic_secret_name" {
-  value = aws_secretsmanager_secret.anthropic.name
+output "anthropic_parameter_name" {
+  value = aws_ssm_parameter.anthropic.name
+}
+
+output "build_project" {
+  value = aws_codebuild_project.image.name
+}
+
+output "image_tag" {
+  value = var.image_tag
 }

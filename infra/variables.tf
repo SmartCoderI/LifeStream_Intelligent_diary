@@ -73,7 +73,7 @@ variable "job_timeout_seconds" {
 variable "log_retention_days" {
   description = "How long worker logs are kept."
   type        = number
-  default     = 365
+  default     = 30
 }
 
 variable "offline_plan" {

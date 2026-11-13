@@ -172,13 +172,39 @@ def test_execution_role_is_scoped(plan):
         f"arn:aws:ecr:{REGION}:{ACCOUNT}:repository/lifestream-worker"
     log_group = f"arn:aws:logs:{REGION}:{ACCOUNT}:log-group:/aws/batch/lifestream-worker"
     assert set(_as_list(statements["WriteWorkerLogs"]["Resource"])) == {log_group, f"{log_group}:*"}
+    assert statements["ReadAnthropicKey"]["Action"] == "ssm:GetParameters"
     assert statements["ReadAnthropicKey"]["Resource"] == \
-        f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:lifestream/anthropic-api-key-??????"
+        f"arn:aws:ssm:{REGION}:{ACCOUNT}:parameter/lifestream/anthropic-api-key"
+
+
+def test_build_role_is_scoped(plan):
+    statements = {s["Sid"]: s for s in _policy_named(plan, "build-and-push-worker-image")}
+    assert set(statements) == {"ReadBuildSource", "LocateBucket", "EcrLogin", "PushWorkerImage",
+                               "WriteBuildLogs", "ReadHfToken"}
+    assert statements["ReadBuildSource"]["Resource"] == f"{BUCKET_ARN}/build/*"
+    assert statements["LocateBucket"]["Resource"] == BUCKET_ARN
+    assert statements["PushWorkerImage"]["Resource"] == \
+        f"arn:aws:ecr:{REGION}:{ACCOUNT}:repository/lifestream-worker"
+    assert statements["ReadHfToken"]["Resource"] == f"arn:aws:ssm:{REGION}:{ACCOUNT}:parameter/lifestream/hf-token"
+
+
+def test_build_project(plan):
+    project = _one(plan, "aws_codebuild_project")
+    env = project["environment"][0]
+    assert env["privileged_mode"] is True                       # Docker inside CodeBuild
+    variables = {v["name"]: v for v in env["environment_variable"]}
+    assert variables["HF_TOKEN"]["type"] == "PARAMETER_STORE"   # never plain text
+    assert variables["HF_TOKEN"]["value"] == "/lifestream/hf-token"
+    assert project["source"][0]["location"] == f"{BUCKET}/build/source.zip"
 
 
 def test_trust_policies(plan):
     roles = {r["name"]: _statements(r["assume_role_policy"]) for r in _resources(plan, "aws_iam_role")}
-    assert set(roles) == {"lifestream-worker-execution", "lifestream-worker-job", "lifestream-batch-instance"}
+    assert set(roles) == {"lifestream-worker-execution", "lifestream-worker-job", "lifestream-batch-instance",
+                          "lifestream-image-build"}
+    (s,) = roles["lifestream-image-build"]
+    assert s["Principal"] == {"Service": "codebuild.amazonaws.com"}
+    assert s["Condition"]["StringEquals"]["aws:SourceAccount"] == ACCOUNT
     for name in ("lifestream-worker-execution", "lifestream-worker-job"):
         (s,) = roles[name]
         assert s["Principal"] == {"Service": "ecs-tasks.amazonaws.com"}
@@ -191,6 +217,23 @@ def test_trust_policies(plan):
 def test_only_expected_managed_policies(plan):
     attached = {a["policy_arn"] for a in _resources(plan, "aws_iam_role_policy_attachment")}
     assert attached == {"arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"}
+
+
+# ---------- cost ----------
+
+def test_lowest_cost_settings(plan):
+    import json as _json
+    rules = _json.loads(_one(plan, "aws_ecr_lifecycle_policy")["policy"])["rules"]
+    assert rules[0]["selection"]["countNumber"] == 1                 # one image stored
+    lifecycle = _one(plan, "aws_s3_bucket_lifecycle_configuration")["rule"][0]
+    assert lifecycle["noncurrent_version_expiration"][0]["noncurrent_days"] == 1
+    assert {g["retention_in_days"] for g in _resources(plan, "aws_cloudwatch_log_group")} == {30}
+    params = _resources(plan, "aws_ssm_parameter")
+    assert {p["name"] for p in params} == {"/lifestream/anthropic-api-key", "/lifestream/hf-token"}
+    assert all(p["type"] == "SecureString" and p["tier"] == "Standard" for p in params)  # free tier
+    assert not _resources(plan, "aws_secretsmanager_secret")
+    assert _one(plan, "aws_codebuild_project")["environment"][0]["compute_type"] == "BUILD_GENERAL1_SMALL"
+    assert _one(plan, "aws_batch_compute_environment")["compute_resources"][0]["max_vcpus"] == 4
 
 
 # ---------- ECR and Batch ----------
@@ -228,6 +271,7 @@ def test_job_definition(plan):
     assert {r["type"]: r["value"] for r in props["resourceRequirements"]}["GPU"] == "1"
     assert props["jobRoleArn"].endswith(":role/lifestream-worker-job")
     assert props["executionRoleArn"].endswith(":role/lifestream-worker-execution")
-    assert [s["name"] for s in props["secrets"]] == ["ANTHROPIC_API_KEY"]
+    assert props["secrets"] == [{"name": "ANTHROPIC_API_KEY", "valueFrom":
+                                 f"arn:aws:ssm:{REGION}:{ACCOUNT}:parameter/lifestream/anthropic-api-key"}]
     assert not any(e["name"] == "ANTHROPIC_API_KEY" for e in props.get("environment", []))
     assert job["parameters"]["output"] == f"s3://{BUCKET}/out/"

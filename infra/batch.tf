@@ -117,8 +117,7 @@ resource "aws_batch_job_definition" "worker" {
       { name = "AWS_DEFAULT_REGION", value = var.region },
     ]
     secrets = [
-      # a secret name is enough when it's in the same region
-      { name = "ANTHROPIC_API_KEY", valueFrom = local.anthropic_secret_name },
+      { name = "ANTHROPIC_API_KEY", valueFrom = local.anthropic_param_arn },
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -133,6 +132,6 @@ resource "aws_batch_job_definition" "worker" {
 
   depends_on = [
     aws_iam_role_policy.execution, aws_iam_role_policy.job, aws_ecr_repository.worker,
-    aws_secretsmanager_secret.anthropic, aws_cloudwatch_log_group.worker,
+    aws_ssm_parameter.anthropic, aws_cloudwatch_log_group.worker,
   ]
 }

@@ -4,12 +4,14 @@
 # Runs on AWS Batch GPU instances (g4dn.xlarge, NVIDIA T4). The NVIDIA driver comes from the host;
 # CUDA and cuDNN come from PyTorch's pip packages (see LD_LIBRARY_PATH below).
 #
-# Build for x86 (the Batch instances are x86, even when you build on an Apple Silicon Mac):
+# Normally built by AWS CodeBuild (infra/build-image.sh), on x86 with HF_TOKEN from SSM.
+# Building locally needs ~30 GB free disk and x86:
 #   docker buildx build --platform linux/amd64 --secret id=hf_token,env=HF_TOKEN -t lifestream-worker .
 # The pyannote model is gated, so the build needs HF_TOKEN. It's passed as a build secret:
 # it is never written into an image layer.
 
-FROM python:3.11-slim-trixie
+# Docker Hub's official image via AWS's public mirror (CodeBuild often hits Docker Hub's pull limits).
+FROM public.ecr.aws/docker/library/python:3.11-slim-trixie
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
