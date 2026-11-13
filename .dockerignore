@@ -1,0 +1,9 @@
+# Only pyproject.toml, uv.lock, .python-version, README.md and src/ go into the worker image.
+*
+!pyproject.toml
+!uv.lock
+!.python-version
+!README.md
+!src/
+**/__pycache__
+**/*.pyc

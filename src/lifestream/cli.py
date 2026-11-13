@@ -288,6 +288,52 @@ def eval_questions(
 
 
 @app.command()
+def worker(
+    input_uri: str = typer.Argument(..., metavar="INPUT", help="s3://bucket/uploads/video.mp4"),
+    output: str = typer.Option(..., help="s3://bucket/out/ (results go to <output>/<video_id>/)."),
+    date: str = typer.Option("today", help="Recording date, YYYY-MM-DD ('today' = run date)."),
+    num_speakers: Optional[int] = typer.Option(None),
+    min_speakers: Optional[int] = typer.Option(None),
+    max_speakers: Optional[int] = typer.Option(None),
+    no_llm: bool = typer.Option(False, help="Stop after the script (skip classification/summary)."),
+):
+    """F7: process one video from S3 and upload the results (the AWS Batch job command)."""
+    import boto3
+
+    from .cloud.worker import run_job
+
+    report = run_job(input_uri, output, date, get_settings(), s3=boto3.client("s3"),
+                     run_llm=not no_llm, num_speakers=num_speakers,
+                     min_speakers=min_speakers, max_speakers=max_speakers)
+    typer.echo(json.dumps(report))
+
+
+@app.command("eval-coldstart")
+def eval_coldstart(
+    video: Path = typer.Argument(..., exists=True, dir_okay=False, help="A test video to upload."),
+    date: str = typer.Option(dt.date.today().isoformat(), help="Recording date, YYYY-MM-DD."),
+    infra: Path = typer.Option(Path("infra"), help="Terraform folder (names are read from its outputs)."),
+    no_llm: bool = typer.Option(False, help="Skip the Claude steps in the test job."),
+    save: Path = typer.Option(Path("data/eval/m3a"), help="Where to save the report."),
+):
+    """M3a: run one GPU job on AWS Batch and record the cold start (instance launch + image pull)."""
+    import boto3
+
+    from .evaluation.coldstart import run_coldstart, terraform_outputs
+
+    outputs = terraform_outputs(infra)
+    session = boto3.Session(region_name=outputs["region"])
+    report = run_coldstart(video, date, outputs=outputs, session=session, run_llm=not no_llm,
+                           log=typer.echo)
+    save.mkdir(parents=True, exist_ok=True)
+    path = save / f"{dt.datetime.now(dt.timezone.utc):%Y%m%dT%H%M%SZ}.json"
+    path.write_text(json.dumps(report, indent=2))
+    typer.echo(json.dumps(report, indent=2))
+    typer.echo(f"Saved: {path}")
+    raise typer.Exit(0 if report["status"] == "SUCCEEDED" else 1)
+
+
+@app.command()
 def serve(
     host: str = typer.Option("127.0.0.1"),
     port: int = typer.Option(8000),

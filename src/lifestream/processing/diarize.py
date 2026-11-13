@@ -17,6 +17,7 @@ FUTURE (after moving to AWS with an NVIDIA GPU): consider NVIDIA's
 from __future__ import annotations
 
 import gc
+import os
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -36,7 +37,9 @@ def diarize(
     max_speakers: int | None = None,
     timings=None,
 ) -> list[SpeakerSegment]:
-    if not settings.hf_token:
+    # The cloud worker image has the model baked in and runs with HF_HUB_OFFLINE=1,
+    # so it needs no token at run time (the token is only used at image build time).
+    if not settings.hf_token and os.environ.get("HF_HUB_OFFLINE") != "1":
         raise DiarizationError(
             "HF_TOKEN is not set. Accept the terms for "
             f"{settings.diarization_model} on huggingface.co, create a read token, "

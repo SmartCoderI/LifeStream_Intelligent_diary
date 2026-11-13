@@ -28,3 +28,10 @@ data/
 # web app
 web/node_modules/
 web/dist/
+
+# Terraform (state can contain secrets and is kept locally; the provider lock file is committed)
+infra/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log

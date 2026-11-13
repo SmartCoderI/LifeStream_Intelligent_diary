@@ -3,8 +3,9 @@
 Turns video recordings (vlogs, meetings, body-cam footage) into a timestamped
 script and a structured daily diary.
 
-**Status (all local):** Stage 1 (core processing engine; F7 cloud infrastructure not yet),
-Stage 2 (memory: search, answers with citations, speaker names), and a web dashboard.
+**Status:** Stage 1 (core processing engine), Stage 2 (memory: search, answers with citations,
+speaker names) and a web dashboard run locally. F7 (AWS Batch GPU worker, Terraform) is in
+[infra/](infra/README.md).
 
 ## Pipeline
 
