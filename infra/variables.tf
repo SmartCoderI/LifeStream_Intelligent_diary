@@ -65,9 +65,9 @@ variable "llm_model" {
 }
 
 variable "whisper_model" {
-  description = "Whisper model the Batch job uses. The image has large-v3 and large-v3-turbo (several times faster to decode; check M1/M3b before switching)."
+  description = "Whisper model the Batch job uses; the image has large-v3 and large-v3-turbo. Turbo: speech-to-text 2.2x faster on the T4 (43.9 -> 19.6 s for a 17.7-min video), 3.3% of words differ from large-v3, mostly filler words."
   type        = string
-  default     = "large-v3"
+  default     = "large-v3-turbo"
 
   validation {
     condition     = contains(["large-v3", "large-v3-turbo"], var.whisper_model)
@@ -79,6 +79,12 @@ variable "asr_batch_size" {
   description = "Whisper segments transcribed at once on the GPU (the T4's 16 GB fits 16 with large-v3 float16 and diarization alongside)."
   type        = number
   default     = 16
+}
+
+variable "parallel_audio" {
+  description = "Run diarization alongside transcription on the GPU. Off: on the T4 the two models mostly share the GPU (measured ~5% faster on a 17.7-min video) and loading their libraries from two threads at once can fail a run."
+  type        = bool
+  default     = false
 }
 
 variable "job_vcpus" {

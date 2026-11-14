@@ -319,8 +319,9 @@ def test_job_definition(plan):
     assert not any(e["name"] == "ANTHROPIC_API_KEY" for e in props.get("environment", []))
     assert job["parameters"]["output"] == f"s3://{BUCKET}/out/"
     assert {"name": "LLM_MODEL", "value": "claude-opus-5-5"} in props["environment"]
-    assert {"name": "WHISPER_MODEL", "value": "large-v3"} in props["environment"]
+    assert {"name": "WHISPER_MODEL", "value": "large-v3-turbo"} in props["environment"]
     assert {"name": "ASR_BATCH_SIZE", "value": "16"} in props["environment"]
+    assert {"name": "PARALLEL_AUDIO", "value": "false"} in props["environment"]
 
 
 # ---------- Stage 3, F11: uploads start the GPU job (EventBridge, no Lambda) ----------
