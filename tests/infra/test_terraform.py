@@ -322,6 +322,7 @@ def test_job_definition(plan):
     assert {"name": "WHISPER_MODEL", "value": "large-v3-turbo"} in props["environment"]
     assert {"name": "ASR_BATCH_SIZE", "value": "16"} in props["environment"]
     assert {"name": "PARALLEL_AUDIO", "value": "false"} in props["environment"]
+    assert {"name": "DIARIZATION_STEP", "value": "0.2"} in props["environment"]
 
 
 # ---------- Stage 3, F11: uploads start the GPU job (EventBridge, no Lambda) ----------

@@ -169,6 +169,7 @@ resource "aws_batch_job_definition" "worker" {
       { name = "WHISPER_MODEL", value = var.whisper_model },
       { name = "ASR_BATCH_SIZE", value = tostring(var.asr_batch_size) },
       { name = "PARALLEL_AUDIO", value = tostring(var.parallel_audio) },
+      { name = "DIARIZATION_STEP", value = tostring(var.diarization_step) },
     ]
     secrets = [
       { name = "ANTHROPIC_API_KEY", valueFrom = local.anthropic_param_arn },

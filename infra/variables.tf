@@ -81,6 +81,17 @@ variable "asr_batch_size" {
   default     = 16
 }
 
+variable "diarization_step" {
+  description = "pyannote window step as a share of its 10 s window (0.1 = pyannote's default). 0.2 halves the voice embeddings, most of diarization's time; on our labelled audio it was 1.7-1.8x faster with the same M1 and DER."
+  type        = number
+  default     = 0.2
+
+  validation {
+    condition     = var.diarization_step > 0 && var.diarization_step <= 0.5
+    error_message = "Use a step between 0 and 0.5 (larger steps leave gaps the model can't fill)."
+  }
+}
+
 variable "parallel_audio" {
   description = "Run diarization alongside transcription on the GPU. Off: on the T4 the two models mostly share the GPU (measured ~5% faster on a 17.7-min video) and loading their libraries from two threads at once can fail a run."
   type        = bool

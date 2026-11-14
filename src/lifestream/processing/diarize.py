@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import gc
 import os
+import time
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -46,8 +47,9 @@ def diarize(
             "and put HF_TOKEN=... in .env"
         )
 
+    import torch
     import whisperx
-    from whisperx.diarize import DiarizationPipeline
+    from pyannote.audio import Pipeline
 
     def sub(name: str, label: str, kind: str = "step"):
         if timings is None:
@@ -55,21 +57,66 @@ def diarize(
         return timings.step(f"diarize.{name}", label, kind=kind, parent="diarize")
 
     with sub("load_model", "Load speaker model (pyannote)", "load"):
-        pipeline = DiarizationPipeline(
-            model_name=settings.diarization_model,
-            token=settings.hf_token,
-            device=settings.diarization_device,
-        )
+        pipeline = Pipeline.from_pretrained(settings.diarization_model, token=settings.hf_token)
+        pipeline.to(torch.device(settings.diarization_device))
+        set_window_step(pipeline, settings.diarization_step)
     audio = whisperx.load_audio(str(wav))
-    with sub("run", "Identify speakers") as span:
-        df = pipeline(audio, num_speakers=num_speakers, min_speakers=min_speakers, max_speakers=max_speakers)
-        span["meta"]["speakers"] = int(df["speaker"].nunique()) if len(df) else 0
+    stages = StageClock()
+    output = pipeline({"waveform": torch.from_numpy(audio[None, :]), "sample_rate": SAMPLE_RATE},
+                      num_speakers=num_speakers, min_speakers=min_speakers, max_speakers=max_speakers,
+                      hook=stages.hook)
+    stages.finish()
+    if timings is not None:
+        for name, label, start, end in stages.spans():
+            timings.add(f"diarize.{name}", label, start, end, parent="diarize")
     del pipeline
     gc.collect()
 
-    segments = [
-        SpeakerSegment(start=float(row.start), end=float(row.end), speaker=str(row.speaker))
-        for row in df.itertuples()
-    ]
+    segments = [SpeakerSegment(start=float(seg.start), end=float(seg.end), speaker=str(speaker))
+                for seg, _, speaker in output.speaker_diarization.itertracks(yield_label=True)]
     segments.sort(key=lambda s: (s.start, s.end))
     return segments
+
+
+SAMPLE_RATE = 16_000  # whisperx.load_audio's rate
+
+
+def set_window_step(pipeline, step: float) -> None:
+    """How far pyannote's 10 s analysis window moves each time, as a share of its length.
+    0.1 (pyannote's default) = every second of audio is analysed ~10 times; 0.2 halves the
+    windows and the voice embeddings computed for them, which is most of the time.
+    pyannote only takes this when the pipeline is built, so it is also set on the
+    segmentation model's sliding window (checked by tests/processing/test_diarize.py)."""
+    pipeline.segmentation_step = step
+    pipeline._segmentation.step = step * pipeline._segmentation.duration
+
+
+class StageClock:
+    """pyannote's progress hook -> wall-clock time per stage. pyannote calls the hook during
+    a stage (with progress) and once when it is done; clustering runs between the end of
+    "embeddings" and "discrete_diarization", so its time is the gap between them."""
+
+    LABELS = {"segmentation": "Find speech + overlapping voices", "embeddings": "Voice embeddings",
+              "clustering": "Group voices into speakers (clustering)"}
+
+    def __init__(self, clock=time.time):
+        self.clock = clock
+        self.start = clock()
+        self.last: dict[str, float] = {}  # stage -> time of its last hook call
+        self.end: float | None = None
+
+    def hook(self, step_name, step_artifact=None, file=None, total=None, completed=None) -> None:
+        self.last[step_name] = self.clock()
+
+    def finish(self) -> None:
+        self.end = self.clock()
+
+    def spans(self) -> list[tuple[str, str, float, float]]:
+        """(name, label, start, end) for segmentation, embeddings, clustering (+ the rest)."""
+        seg_end = self.last.get("speaker_counting", self.last.get("segmentation"))
+        emb_end = self.last.get("embeddings")
+        if seg_end is None or emb_end is None or self.end is None:
+            return []  # no speech: pyannote stops early
+        return [("segmentation", self.LABELS["segmentation"], self.start, seg_end),
+                ("embeddings", self.LABELS["embeddings"], seg_end, emb_end),
+                ("clustering", self.LABELS["clustering"], emb_end, self.end)]

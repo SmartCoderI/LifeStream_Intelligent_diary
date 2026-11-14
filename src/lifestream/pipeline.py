@@ -157,6 +157,7 @@ def _run_steps(video: Path, date: str, out_root: Path, out: Path, vid: str, sett
         "device": settings.device, "whisper_model": settings.whisper_model,
         "compute_type": settings.compute_type, "diarization_device": settings.diarization_device,
         "asr_batch_size": settings.asr_batch_size, "parallel_audio": parallel_audio,
+        "diarization_step": settings.diarization_step,
         "llm_model": settings.active_llm_model if run_llm else None, "embed_model": settings.embed_model,
     }
 

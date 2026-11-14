@@ -33,6 +33,9 @@ class Settings:
         default_factory=lambda: _env("DIARIZATION_MODEL", "pyannote/speaker-diarization-community-1")
     )
     diarization_device: str = field(default_factory=lambda: _env("DIARIZATION_DEVICE", "cpu"))
+    # pyannote's analysis window (10 s) moves by this share of its length: 0.1 = pyannote's default
+    # (every second analysed ~10 times); larger = fewer windows and voice embeddings, faster.
+    diarization_step: float = field(default_factory=lambda: float(_env("DIARIZATION_STEP", "0.1")))
     # Diarization alongside transcription (they only meet at the merge). auto = when both run on
     # a GPU; on a CPU they would just compete for the same cores. true / false to force it.
     parallel_audio_mode: str = field(default_factory=lambda: _env("PARALLEL_AUDIO", "auto"))
