@@ -6,7 +6,6 @@ import { configLine, parallelNote } from "../lib/categories";
 import { clockTime, duration, timeAgo } from "../lib/format";
 import { usePolling } from "../lib/usePolling";
 import BreakdownBar from "../components/latency/BreakdownBar";
-import Kpis from "../components/latency/Kpis";
 import StepsToggle from "../components/latency/StepsToggle";
 import Waterfall from "../components/latency/Waterfall";
 
@@ -19,24 +18,22 @@ async function load(environment: Environment | null): Promise<Data> {
 }
 
 const pct = (x: number | null | undefined) => (x == null ? "–" : `${Math.round(x * 100)}%`);
-const COLD_START_TARGET = 6 * 60;  // time budget: GPU instance + image within 6 minutes
 const ENV_LABELS: Record<Environment, string> = { cloud: "Cloud GPU", local: "This computer" };
 const spanTime = (q: QueryRecord, category: string) =>
   q.stats.breakdown.filter((b) => b.category === category).reduce((t, b) => t + b.seconds, 0);
 
-/** Cloud runs against the Stage 3 time budget (targets are for a 1-hour video). Its lines group
+/** The newest cloud run of a ~1-hour video against the Stage 3 time budget. Its lines group
  *  the same timeline differently from the bar: model loading counts toward its step. */
 function BudgetTable({ s }: { s: LatencySummary }) {
   if (!s.budget_lines) return null;
   const latest = s.budget;
   return (
-    <div className="budget">
+    <section className="card overview budget">
       <h3 className="subhead">Time budget (1-hour video)</h3>
       <div className="table-wrap">
         <table className="latency-table">
           <thead><tr>
-            <th>Budget line</th><th className="num">Target</th><th className="num">Median per run</th>
-            <th className="num">Latest 1-hour run</th>
+            <th>Budget line</th><th className="num">Target</th><th className="num">Latest 1-hour run</th>
           </tr></thead>
           <tbody>
             {s.budget_lines.map((b) => {
@@ -45,7 +42,6 @@ function BudgetTable({ s }: { s: LatencySummary }) {
                 <tr key={b.line}>
                   <td>{b.label}</td>
                   <td className="num">{b.target}</td>
-                  <td className="num">{b.median != null ? duration(b.median) : "–"}</td>
                   <td className={`num ${r ? (r.within ? "ok" : "over") : ""}`}>
                     {r ? `${duration(r.seconds)} ${r.within ? "✓" : "over"}` : "–"}
                   </td>
@@ -55,7 +51,6 @@ function BudgetTable({ s }: { s: LatencySummary }) {
           </tbody>
           <tfoot><tr>
             <td>Upload → done</td><td className="num">&lt; 20 min</td>
-            <td className="num">{s.total_median != null ? duration(s.total_median) : "–"}</td>
             <td className={`num ${latest ? (latest.passed ? "ok" : "over") : ""}`}>
               {latest ? `${duration(latest.total)} ${latest.passed ? "✓ pass" : "fail"}` : "–"}
             </td>
@@ -63,8 +58,8 @@ function BudgetTable({ s }: { s: LatencySummary }) {
         </table>
       </div>
       <p className="muted small">Model loading counts toward its step here, as in the budget.
-        {!latest && " No 1-hour video processed in the cloud yet; the medians come from shorter videos, so the speech lines are well under target. Upload a ~1-hour video (M3a) for the real check."}</p>
-    </div>
+        {!latest && " No 1-hour video processed in the cloud yet. Upload a ~1-hour video (M3a) for the check."}</p>
+    </section>
   );
 }
 
@@ -91,7 +86,6 @@ export default function LatencyPage() {
   const both = (s.environments?.cloud ?? 0) > 0 && (s.environments?.local ?? 0) > 0;
   const run = runs.find((r) => r.run_id === runId) ?? runs[0];
   const query = queries.find((q) => q.at === queryAt) ?? queries[0];
-  const q = s.queries;
 
   return (
     <>
@@ -100,8 +94,8 @@ export default function LatencyPage() {
           <h1>Latency</h1>
           <p>Where processing time goes, so you can see what to fix first.</p>
         </div>
-        <div className="muted context">
-          {both && env && (
+        {both && env && (
+          <div className="muted context">
             <div className="env-switch" role="group" aria-label="Where videos were processed">
               {(["cloud", "local"] as Environment[]).map((e) => (
                 <button key={e} aria-pressed={env === e} onClick={() => setEnvironment(e)}>
@@ -109,13 +103,8 @@ export default function LatencyPage() {
                 </button>
               ))}
             </div>
-          )}
-          <div>
-            {s.runs ? `Last ${s.runs} full run${s.runs === 1 ? "" : "s"}` : "No full runs yet"}
-            {env && !both && ` · ${ENV_LABELS[env]}`}
-            {configLine(s.config) && ` · ${configLine(s.config)}`}
           </div>
-        </div>
+        )}
       </header>
 
       {data.active.length > 0 && (
@@ -129,35 +118,7 @@ export default function LatencyPage() {
         </div>
       )}
 
-      <section className="card overview">
-        <Kpis items={[
-          ...(cloud ? [
-            { label: "Upload → done", value: s.total_median != null ? duration(s.total_median) : "–",
-              note: "median, whole pipeline" },
-            { label: "Cold start", value: s.cold_start_median != null ? duration(s.cold_start_median) : "–",
-              note: "median · target ≤ 6 min",
-              tone: (s.cold_start_median ?? 0) > COLD_START_TARGET ? "warn" as const : undefined },
-          ] : []),
-          { label: "Processing speed", value: s.speed_median != null ? `${s.speed_median.toFixed(2)}×` : "–",
-            note: "time per second of video (median)" },
-          ...(cloud ? [] : [
-            { label: "Bottleneck", value: s.bottleneck?.label ?? "–",
-              note: s.bottleneck ? `${pct(s.bottleneck.share)} of processing time` : undefined, tone: "warn" as const },
-            { label: "LLM share", value: pct(s.llm_share), note: "of processing time" },
-          ]),
-          { label: "Ask / Search", value: q.p50 != null ? duration(q.p50) : "–",
-            note: q.count ? `p50 · p95 ${duration(q.p95)} · ${q.count} queries` : "no queries yet" },
-        ]} />
-        <h3 className="subhead">Where the time goes</h3>
-        <p className="muted small">Wall-clock time. Steps run one after another, except scene detection, which runs
-          alongside transcription and speaker detection and only counts when nothing else was running.</p>
-        <BreakdownBar items={s.breakdown} perMinute />
-        <BudgetTable s={s} />
-        {s.runs_skipped > 0 && (
-          <p className="muted small">{s.runs_skipped} run{s.runs_skipped === 1 ? "" : "s"} left out: failed, reused saved
-            results (steps not re-timed), or recorded before the detailed breakdown.</p>
-        )}
-      </section>
+      {cloud && <BudgetTable s={s} />}
 
       <section className="latency-section">
         <h2>Runs</h2>
@@ -201,6 +162,8 @@ export default function LatencyPage() {
                 </div>
                 {run.status === "failed" && <p className="error-text">Failed: {run.error}</p>}
                 <BreakdownBar items={run.stats.breakdown} />
+                <p className="muted small">Wall-clock time. Steps run one after another, except scene detection, which runs
+                  alongside transcription and speaker detection and only counts when nothing else was running.</p>
                 {parallelNote(run.stats.parallel) && <p className="muted small">{parallelNote(run.stats.parallel)}</p>}
                 <StepsToggle><Waterfall spans={run.spans} title={`Timeline of ${run.title}`} /></StepsToggle>
               </div>

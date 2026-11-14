@@ -1,34 +1,30 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { cloudRun, cloudSummary, cloudSummaryWithBudget, processingVideo, runs } from "./fixtures";
 import { renderAt } from "./render";
 import { server } from "./server";
 
-test("headline numbers: speed, bottleneck, LLM share, query latency", async () => {
+test("no numbers pooled across runs: no medians, shares or run counts", async () => {
   renderAt("/latency");
-  expect(await screen.findByText("2.35×")).toBeInTheDocument();
-  const bottleneck = screen.getByText("Bottleneck", { selector: ".kpi-label" }).parentElement!;
-  expect(bottleneck).toHaveTextContent("Transcription (WhisperX)");
-  expect(bottleneck).toHaveTextContent("55% of processing time");
-  expect(screen.getByText("LLM share", { selector: ".kpi-label" }).parentElement).toHaveTextContent("20%");
-  expect(screen.getByText("Ask / Search", { selector: ".kpi-label" }).parentElement)
-    .toHaveTextContent("p50 · p95 4.10 s · 12 queries");
-  expect(screen.getByText(/Last 3 full runs · This computer · CPU · medium.en int8 · claude-opus-5-5/)).toBeInTheDocument();
-  expect(screen.getByText(/1 run left out/)).toBeInTheDocument();
+  await screen.findByText("Runs");
+  expect(document.querySelector(".kpi")).toBeNull();
+  expect(screen.queryByText("Where the time goes")).not.toBeInTheDocument();
+  expect(screen.queryByText(/full runs?/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/left out/)).not.toBeInTheDocument();
+  expect(screen.queryByText("2.35×")).not.toBeInTheDocument();          // median speed
+  expect(screen.queryByText("Time budget (1-hour video)")).not.toBeInTheDocument();  // cloud only
 });
 
-test("where the time goes: ranked kinds of work with share and time per video minute", async () => {
+test("the selected run's breakdown: ranked kinds of work with share", async () => {
   renderAt("/latency");
-  await screen.findByText("Where the time goes");
-  const table = document.querySelector<HTMLElement>(".overview .bd-table")!;
+  await screen.findByText("Runs");
+  const table = document.querySelector<HTMLElement>(".detail .bd-table")!;
   const rows = within(table).getAllByRole("row");
   expect(rows[0]).toHaveTextContent("Transcription (WhisperX)");
-  expect(rows[0]).toHaveTextContent("55%");
-  expect(rows[0]).toHaveTextContent("1 min 16 s / video min");
+  expect(rows[0]).toHaveTextContent("42%");
   expect(rows[1]).toHaveTextContent("LLM (Claude)");
   expect(screen.getByText(/except scene detection, which runs/)).toBeInTheDocument();
-  expect(screen.queryByText("Time budget (1-hour video)")).not.toBeInTheDocument();  // cloud only
 });
 
 test("runs table is concise and a run's steps are behind a toggle", async () => {
@@ -83,47 +79,47 @@ test("empty state", async () => {
   );
   renderAt("/latency");
   expect(await screen.findByText(/No runs yet/)).toBeInTheDocument();
-  expect(screen.getByText("No full runs yet")).toBeInTheDocument();
   expect(screen.getByText("No questions asked yet.")).toBeInTheDocument();
 });
 
 test("hovering a breakdown segment explains the category", async () => {
   renderAt("/latency");
-  await screen.findByText("Where the time goes");
-  const seg = document.querySelector<HTMLElement>(".overview .bd-seg.cat-llm")!;
+  await screen.findByText("Runs");
+  const seg = document.querySelector<HTMLElement>(".detail .bd-seg.cat-llm")!;
   await userEvent.hover(seg);
-  expect(screen.getByRole("tooltip")).toHaveTextContent("LLM (Claude) · 20%");
+  expect(screen.getByRole("tooltip")).toHaveTextContent("LLM (Claude) · 25%");
   expect(screen.getByRole("tooltip")).toHaveTextContent("classifying the video, writing the summary");
 });
 
 // ---------- cloud runs (Stage 3) ----------
 
-test("cloud runs: upload-to-done, cold start against the 6-minute target, cold/warm per run", async () => {
+test("cloud runs: each run's total and cold start, cold/warm per run", async () => {
   server.use(
     http.get("*/api/latency/summary", () => HttpResponse.json(cloudSummary)),
     http.get("*/api/latency/runs", () => HttpResponse.json([cloudRun, ...runs])),
   );
   renderAt("/latency");
-  const cold = (await screen.findByText("Cold start", { selector: ".kpi-label" })).parentElement!;
-  expect(cold).toHaveTextContent("7 min 32 s");
-  expect(cold).toHaveClass("kpi-warn");                     // over the 6-minute budget
-  expect(screen.getByText("Upload → done", { selector: ".kpi-label" }).parentElement).toHaveTextContent("17 min");
-  expect(screen.queryByText("LLM share", { selector: ".kpi-label" })).not.toBeInTheDocument();
   // only cloud runs are listed, with their cold start
+  await screen.findByText("Runs");
   const table = screen.getAllByRole("table").find((t) => within(t).queryByText("Databricks interview"))!;
   expect(within(table).getByRole("columnheader", { name: "Cold start" })).toBeInTheDocument();
+  const row = within(table).getByText("Databricks interview").closest("tr")!;
+  expect(row).toHaveTextContent("17 min");
+  expect(row).toHaveTextContent("7 min 32 s");
+  expect(document.querySelector(".kpi")).toBeNull();
   expect(within(table).queryByText("Weekly Student Success Meeting")).not.toBeInTheDocument();
   expect(within(table).getByText("cold")).toBeInTheDocument();
 });
 
-test("time budget: targets for a 1-hour video, medians, and no check until a 1-hour run exists", async () => {
+test("time budget: targets for a 1-hour video, no medians, and no check until a 1-hour run exists", async () => {
   server.use(http.get("*/api/latency/summary", () => HttpResponse.json(cloudSummary)),
              http.get("*/api/latency/runs", () => HttpResponse.json([cloudRun])));
   renderAt("/latency");
   const budget = (await screen.findByText("Time budget (1-hour video)")).closest(".budget") as HTMLElement;
   const row = within(budget).getByText("WhisperX large-v3").closest("tr")!;
   expect(row).toHaveTextContent("4–8 min");
-  expect(row).toHaveTextContent("2 min 30 s");     // median per run
+  expect(within(budget).getAllByRole("columnheader").map((h) => h.textContent))
+    .toEqual(["Budget line", "Target", "Latest 1-hour run"]);
   expect(within(budget).getByText(/No 1-hour video processed in the cloud yet/)).toBeInTheDocument();
 });
 
@@ -154,9 +150,8 @@ test("switching between cloud and this computer", async () => {
   const local = await screen.findByRole("button", { name: "This computer (3)" });
   expect(screen.getByRole("button", { name: "Cloud GPU (2)" })).toHaveAttribute("aria-pressed", "true");
   await userEvent.click(local);
-  expect(await screen.findByText("LLM share", { selector: ".kpi-label" })).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByText("Time budget (1-hour video)")).not.toBeInTheDocument());
   expect(asked).toContain("local");
-  expect(screen.queryByText("Time budget (1-hour video)")).not.toBeInTheDocument();
   const table = screen.getAllByRole("table").find((t) => within(t).queryByText("Weekly Student Success Meeting"));
   expect(table).toBeDefined();
 });
@@ -165,8 +160,8 @@ test("cloud: LLM and database time stay visible, and parallel scene detection is
   server.use(http.get("*/api/latency/summary", () => HttpResponse.json(cloudSummary)),
              http.get("*/api/latency/runs", () => HttpResponse.json([cloudRun])));
   renderAt("/latency");
-  await screen.findByText("Where the time goes");
-  const table = document.querySelector<HTMLElement>(".overview .bd-table")!;
+  await screen.findByText("Runs");
+  const table = document.querySelector<HTMLElement>(".detail .bd-table")!;
   expect(within(table).getByText("LLM (Claude)")).toBeInTheDocument();
   expect(within(table).getByText("Database")).toBeInTheDocument();
   expect(screen.getByText(/Scene detection \+ keyframes \(parallel\) ran alongside other steps for 1 min 00 s; all of it was hidden/))
