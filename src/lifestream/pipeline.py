@@ -17,7 +17,7 @@ import multiprocessing as mp
 import re
 import time
 import uuid
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -76,6 +76,21 @@ def _timed_visual(fn: VisualFn, **kwargs):
     start = time.time()
     result = fn(**kwargs)
     return result, start, time.time()
+
+
+def _diarize_step(fn: DiarizeFn, wav: Path, settings: Settings, timings: Timings, path: Path,
+                  hints: dict, parallel: bool) -> list[SpeakerSegment]:
+    """F2 as one timed step; saves its result. `parallel`: running in a thread alongside
+    transcription, so the timeline only counts the part nothing else was running."""
+    label = "Speaker diarization (pyannote, alongside transcription)" if parallel \
+        else "Speaker diarization (pyannote)"
+    with timings.step("diarize", label) as span:
+        segments = fn(wav, settings, timings=timings, **hints)
+        span["meta"]["speakers"] = len({s.speaker for s in segments})
+        if parallel:
+            span["meta"]["parallel"] = True
+    _save_list(path, segments)
+    return segments
 
 
 def runs_log_path(out_root: str | Path) -> Path:
@@ -137,9 +152,11 @@ def _run_steps(video: Path, date: str, out_root: Path, out: Path, vid: str, sett
                max_speakers, force: bool, run_llm: bool, parallel: bool,
                log: Callable[[str], None], step: Callable[[str], None]) -> None:
     cached: list[str] = []
+    parallel_audio = parallel and settings.parallel_audio
     timings.meta["config"] = {
         "device": settings.device, "whisper_model": settings.whisper_model,
         "compute_type": settings.compute_type, "diarization_device": settings.diarization_device,
+        "asr_batch_size": settings.asr_batch_size, "parallel_audio": parallel_audio,
         "llm_model": settings.active_llm_model if run_llm else None, "embed_model": settings.embed_model,
     }
 
@@ -167,6 +184,7 @@ def _run_steps(video: Path, date: str, out_root: Path, out: Path, vid: str, sett
         video=str(video), out_dir=str(out), duration=info.duration,
         threshold=settings.scene_threshold, min_scene_len_s=settings.min_scene_len_s,
         max_keyframes=settings.max_keyframes, keyframe_width=settings.keyframe_width,
+        sample_fps=settings.scene_sample_fps,
     )
     visual_cached = scenes_path.exists() and frames_path.exists() and not force
     pool = None
@@ -181,10 +199,23 @@ def _run_steps(video: Path, date: str, out_root: Path, out: Path, vid: str, sett
         visual_future = pool.submit(_timed_visual, components.visual, **visual_kwargs)
         log(f"[{vid}] scene detection started in parallel")
 
+    diar_pool = None
     try:
-        # ---- audio branch: F3 ASR, then F2 diarization ----
+        # ---- audio branch: F3 ASR and F2 diarization ----
+        # They only meet at the merge. On a GPU, diarization runs in a thread alongside
+        # transcription (both models fit on the T4); otherwise one after the other.
         audio_start = time.perf_counter()
         words_path = out / "words.json"
+        diar_path = out / "diarization.json"
+        diar_cached = diar_path.exists() and not force
+        diar_hints = dict(num_speakers=num_speakers, min_speakers=min_speakers, max_speakers=max_speakers)
+        diar_future = None
+        if not diar_cached and parallel_audio:
+            diar_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="diarize")
+            diar_future = diar_pool.submit(_diarize_step, components.diarize, wav, settings, timings,
+                                           diar_path, diar_hints, True)
+            log(f"[{vid}] diarization started alongside transcription")
+
         if words_path.exists() and not force:
             words = _load_list(words_path, Word)
             cached.append("transcribe")
@@ -197,20 +228,20 @@ def _run_steps(video: Path, date: str, out_root: Path, out: Path, vid: str, sett
                 span["meta"]["words"] = len(words)
             _save_list(words_path, words)
 
-        diar_path = out / "diarization.json"
-        if diar_path.exists() and not force:
+        if diar_cached:
             speaker_segments = _load_list(diar_path, SpeakerSegment)
             cached.append("diarize")
             timings.cached("diarize", "Speaker diarization (reused)")
+        elif diar_future is not None:
+            if not diar_future.done():
+                step("diarizing")  # the dashboard shows what is still being waited on
+                log(f"[{vid}] waiting for diarization...")
+            speaker_segments = diar_future.result()
         else:
             step("diarizing")
             log(f"[{vid}] diarizing...")
-            with timings.step("diarize", "Speaker diarization (pyannote)") as span:
-                speaker_segments = components.diarize(
-                    wav, settings, num_speakers=num_speakers,
-                    min_speakers=min_speakers, max_speakers=max_speakers, timings=timings)
-                span["meta"]["speakers"] = len({s.speaker for s in speaker_segments})
-            _save_list(diar_path, speaker_segments)
+            speaker_segments = _diarize_step(components.diarize, wav, settings, timings, diar_path,
+                                             diar_hints, False)
         timings.record("audio_branch", time.perf_counter() - audio_start)
 
         # ---- wait for the visual branch ----
@@ -233,6 +264,8 @@ def _run_steps(video: Path, date: str, out_root: Path, out: Path, vid: str, sett
             _save_list(frames_path, keyframes)
             visual_saved = True
     finally:
+        if diar_pool is not None:
+            diar_pool.shutdown(wait=True)  # its result is saved by _diarize_step even if ASR failed
         if pool is not None:
             pool.shutdown(wait=True)
             # if the audio branch failed, still keep the finished visual results

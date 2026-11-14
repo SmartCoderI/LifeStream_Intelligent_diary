@@ -47,6 +47,43 @@ def test_parallel_visual_branch_in_separate_process(format_samples, tmp_path):
     assert json.loads((folder / "keyframes.json").read_text())[0]["path"] == "keyframes/none.jpg"
 
 
+def test_diarization_runs_alongside_transcription(format_samples, tmp_path):
+    import threading
+
+    started, threads, steps = threading.Event(), {}, []
+
+    def slow_transcribe(wav, settings, **kw):
+        threads["asr"] = threading.current_thread().name
+        assert started.wait(5), "diarization should start before transcription finishes"
+        return fake_transcribe(wav, settings)
+
+    def diarize(wav, settings, **kw):
+        threads["diar"] = threading.current_thread().name
+        started.set()
+        return fake_diarize(wav, settings)
+
+    components = Components(transcribe=slow_transcribe, diarize=diarize, visual=fake_visual, index=fake_index)
+    folder = process_video(format_samples["mp4"], "2026-11-03", tmp_path, Settings(parallel_audio_mode="true"),
+                           llm=FakeLLM(), components=components, parallel=True, log=lambda m: None,
+                           on_step=steps.append)
+    assert threads["asr"] != threads["diar"]
+    script = json.loads((folder / "script.json").read_text())
+    assert [s["speaker"] for s in script] == ["SPEAKER_00", "SPEAKER_01"]
+    assert (folder / "diarization.json").exists()
+    tl = json.loads((folder / "timeline.json").read_text())
+    diar = next(s for s in tl["spans"] if s["name"] == "diarize")
+    assert diar["meta"] == {"speakers": 2, "parallel": True}
+    assert tl["config"]["parallel_audio"] is True
+    assert steps[:3] == ["validating", "extracting_audio", "transcribing"]
+
+
+def test_parallel_audio_setting():
+    assert Settings(device="cpu", diarization_device="cpu").parallel_audio is False
+    assert Settings(device="cuda", diarization_device="cuda").parallel_audio is True
+    assert Settings(device="cuda", diarization_device="cuda", parallel_audio_mode="false").parallel_audio is False
+    assert Settings(device="cpu", diarization_device="cpu", parallel_audio_mode="true").parallel_audio is True
+
+
 def test_daily_diary_combines_videos(format_samples, tmp_path):
     run(format_samples["mp4"], tmp_path, FakeLLM("meeting"))
     run(format_samples["mov"], tmp_path, FakeLLM("vlog"))

@@ -26,3 +26,11 @@ test("speakerColors are stable and distinct", () => {
   expect(c.A).not.toBe(c.B);
   expect(speakerColors(["A", "B"])).toEqual(c);
 });
+
+test("run config line shows the speed settings", async () => {
+  const { configLine } = await import("../lib/categories");
+  expect(configLine({ device: "cuda", whisper_model: "large-v3-turbo", compute_type: "float16", asr_batch_size: 16,
+                      parallel_audio: true, llm_model: "claude-opus-5-5" }))
+    .toBe("CUDA · large-v3-turbo float16 · batch 16 · speakers alongside speech · claude-opus-5-5");
+  expect(configLine({ device: "cpu", whisper_model: "medium.en", parallel_audio: false })).toBe("CPU · medium.en");
+});

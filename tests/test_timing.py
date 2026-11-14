@@ -157,6 +157,23 @@ def test_whisperx_and_pyannote_run_one_after_the_other():
     assert run_stats(tl)["parallel"][0]["hidden"] == 60.3
 
 
+def test_two_parallel_spans_past_the_serial_steps_count_once():
+    """Diarization alongside transcription and scene detection both run on after transcription ends:
+    the 40-50 s stretch where both were running counts once (for the one that started first)."""
+    tl = {"total": 60, "spans": [
+        sp("transcribe", "step", 0, 40),
+        sp("visual", "step", 1, 50, parallel=True),    # 10 s exposed (40-50)
+        sp("diarize", "step", 2, 55, parallel=True),   # only 50-55 left for it
+        sp("diarize.run", "step", 3, 54, "diarize"),   # children of a parallel span aren't split out
+        sp("summarize", "llm", 55, 60),
+    ]}
+    d = as_dict(breakdown(tl))
+    assert d == {"transcription": 40, "media": 10, "speakers": 5, "llm": 5}
+    assert round(sum(d.values()), 6) == 60
+    assert run_stats(tl)["parallel"] == [{"label": "visual", "duration": 49, "hidden": 39},
+                                         {"label": "diarize", "duration": 53, "hidden": 48}]
+
+
 def test_aggregate_uses_full_runs_and_percentiles():
     full = {"status": "done", "total": 100, "video_duration": 60, "config": {"device": "cpu"}, "spans": [
         sp("transcribe.asr", "step", 0, 50, "transcribe"), sp("transcribe", "step", 0, 50),

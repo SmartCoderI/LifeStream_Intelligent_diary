@@ -92,7 +92,7 @@ test("uploads straight to S3 with the date as metadata, then reports the upload 
   await userEvent.click(screen.getByRole("button", { name: "Upload and process" }));
   await screen.findByRole("button", { name: "Upload and process" });
 
-  expect(requests[0].body).toEqual({ date: "2026-11-01", filename: "trip.mp4", size_bytes: 4 });
+  expect(requests[0].body).toEqual({ date: "2026-11-01", filename: "trip.mp4", size_bytes: 4, multipart: true });
   expect(s3).toMatchObject({ method: "PUT", url: S3_URL, headers: { "x-amz-meta-date": "2026-11-01" } });
   expect((s3.body as File).name).toBe("trip.mp4");
   expect(requests[1].url).toMatch(/\/api\/videos\/trip\/uploaded$/);

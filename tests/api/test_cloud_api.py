@@ -108,6 +108,57 @@ def test_upload_returns_a_presigned_put_url(client):
     assert int(query["X-Amz-Expires"][0]) == 3600
 
 
+BIG = 40 * 1024**2  # 3 parts of 16 MiB
+
+
+def test_large_upload_goes_up_in_parts_and_starts_when_put_together(client, s3):
+    r = new_upload(client, size=BIG)
+    assert r.json()["multipart"] is None  # only when the client asks for it
+    client.delete(f"/api/videos/{r.json()['video_id']}")
+
+    body = client.post("/api/videos", json={"date": DATE, "filename": "Team Sync.mp4", "size_bytes": BIG,
+                                            "multipart": True}).json()
+    mp = body["multipart"]
+    assert body["presigned_put_url"] and mp["part_size"] == 16 * 1024**2 and len(mp["part_urls"]) == 3
+    url = urlparse(mp["part_urls"][1])
+    assert url.path == "/uploads/team-sync/team-sync.mp4"
+    assert parse_qs(url.query)["partNumber"] == ["2"] and parse_qs(url.query)["uploadId"] == [mp["upload_id"]]
+
+    key = "uploads/team-sync/team-sync.mp4"
+    sizes = [mp["part_size"], mp["part_size"], BIG - 2 * mp["part_size"]]
+    parts = [{"part_number": n, "etag": s3.upload_part(Bucket=BUCKET, Key=key, UploadId=mp["upload_id"],
+                                                       PartNumber=n, Body=b"x" * size)["ETag"]}
+             for n, size in enumerate(sizes, start=1)]
+    assert s3.list_objects_v2(Bucket=BUCKET).get("KeyCount") == 0  # nothing until put together
+    r = client.post("/api/videos/team-sync/uploaded", json={"parts": parts[::-1]})  # any order
+    assert r.status_code == 202 and r.json()["step"] == "queued"
+    head = s3.head_object(Bucket=BUCKET, Key=key)
+    assert head["ContentLength"] == BIG and head["Metadata"] == {"date": DATE}  # the worker reads the date
+
+
+def test_parts_that_dont_fit_together_are_a_400(client, s3):
+    mp = client.post("/api/videos", json={"date": DATE, "filename": "a.mp4", "size_bytes": BIG,
+                                          "multipart": True}).json()["multipart"]
+    r = client.post("/api/videos/a/uploaded", json={"parts": [{"part_number": 1, "etag": '"nope"'}]})
+    assert r.status_code == 400
+    assert client.get("/api/videos/a/status").json()["step"] == "uploading"
+    assert mp["upload_id"]
+
+
+def test_cancel_or_delete_discards_a_part_upload(client, s3):
+    for action in ("cancel", "delete"):
+        vid = client.post("/api/videos", json={"date": DATE, "filename": f"{action}.mp4", "size_bytes": BIG,
+                                               "multipart": True}).json()["video_id"]
+        s3.upload_part(Bucket=BUCKET, Key=f"uploads/{vid}/{vid}.mp4",
+                       UploadId=s3.list_multipart_uploads(Bucket=BUCKET)["Uploads"][0]["UploadId"],
+                       PartNumber=1, Body=b"x" * 1024)
+        if action == "cancel":
+            assert client.post(f"/api/videos/{vid}/cancel").status_code == 202
+        else:
+            assert client.delete(f"/api/videos/{vid}").status_code == 204
+        assert not s3.list_multipart_uploads(Bucket=BUCKET).get("Uploads")
+
+
 def test_same_name_gets_a_new_id(client):
     assert new_upload(client).json()["video_id"] == "team-sync"
     assert new_upload(client).json()["video_id"] == "team-sync-2"

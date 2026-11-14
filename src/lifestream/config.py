@@ -33,10 +33,16 @@ class Settings:
         default_factory=lambda: _env("DIARIZATION_MODEL", "pyannote/speaker-diarization-community-1")
     )
     diarization_device: str = field(default_factory=lambda: _env("DIARIZATION_DEVICE", "cpu"))
+    # Diarization alongside transcription (they only meet at the merge). auto = when both run on
+    # a GPU; on a CPU they would just compete for the same cores. true / false to force it.
+    parallel_audio_mode: str = field(default_factory=lambda: _env("PARALLEL_AUDIO", "auto"))
 
     # Scene detection / keyframes.
     scene_threshold: float = field(default_factory=lambda: float(_env("SCENE_THRESHOLD", "27.0")))
     min_scene_len_s: float = field(default_factory=lambda: float(_env("MIN_SCENE_LEN_S", "2.0")))
+    # Frames per second compared for cuts (0 = every frame). Decoding still reads every frame, but
+    # skipped ones aren't converted or compared: ~3x faster with the same cuts on our videos.
+    scene_sample_fps: float = field(default_factory=lambda: float(_env("SCENE_SAMPLE_FPS", "5")))
     max_keyframes: int = field(default_factory=lambda: int(_env("MAX_KEYFRAMES", "20")))
     keyframe_width: int = field(default_factory=lambda: int(_env("KEYFRAME_WIDTH", "768")))
 
@@ -74,6 +80,13 @@ class Settings:
     batch_job_definition: str = field(default_factory=lambda: _env("BATCH_JOB_DEFINITION", "lifestream-worker"))
     # API key for /api/* (X-API-Key header or the dashboard's cookie). Unset = no check (local use).
     api_key: str | None = field(default_factory=lambda: _env("API_KEY"))
+
+    @property
+    def parallel_audio(self) -> bool:
+        mode = self.parallel_audio_mode.strip().lower()
+        if mode == "auto":
+            return self.device.startswith("cuda") and self.diarization_device.startswith("cuda")
+        return mode in ("1", "true", "yes", "on")
 
     @property
     def active_llm_model(self) -> str:

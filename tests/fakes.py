@@ -49,7 +49,7 @@ def fake_diarize(wav, settings, **hints):
             SpeakerSegment(start=1.3, end=3.0, speaker="SPEAKER_01")]
 
 
-def fake_visual(video, out_dir, duration, threshold, min_scene_len_s, max_keyframes, keyframe_width):
+def fake_visual(video, out_dir, duration, threshold, min_scene_len_s, max_keyframes, keyframe_width, sample_fps=0.0):
     return [Scene(start=0.0, end=duration)], [Keyframe(time=1.0, path="keyframes/none.jpg")]
 
 

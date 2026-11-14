@@ -39,14 +39,17 @@ ENV PATH=/app/.venv/bin:$PATH \
     NLTK_DATA=/opt/models/nltk
 
 # ---- models (M3a) ----
+# WHISPER_MODEL is the default; EXTRA_WHISPER_MODELS are baked in too, so the job definition's
+# WHISPER_MODEL (terraform var whisper_model) can switch between them without a rebuild.
 ARG WHISPER_MODEL=large-v3
+ARG EXTRA_WHISPER_MODELS=large-v3-turbo
 ARG DIARIZATION_MODEL=pyannote/speaker-diarization-community-1
 RUN --mount=type=secret,id=hf_token,env=HF_TOKEN \
     python -m lifestream.cloud.prefetch \
-      --whisper-model "$WHISPER_MODEL" --diarization-model "$DIARIZATION_MODEL"
+      --whisper-model "$WHISPER_MODEL,$EXTRA_WHISPER_MODELS" --diarization-model "$DIARIZATION_MODEL"
 # Fail the build now, not at job time, if anything would need a download.
 RUN HF_HUB_OFFLINE=1 python -m lifestream.cloud.prefetch --verify \
-      --whisper-model "$WHISPER_MODEL" --diarization-model "$DIARIZATION_MODEL"
+      --whisper-model "$WHISPER_MODEL,$EXTRA_WHISPER_MODELS" --diarization-model "$DIARIZATION_MODEL"
 
 # ---- run-time settings for the GPU worker ----
 ENV HF_HUB_OFFLINE=1 \

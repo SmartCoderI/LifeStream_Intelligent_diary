@@ -40,6 +40,7 @@ class Timings:
         self.error: str | None = None
         self.finished_at: float | None = None
         self._lock = threading.Lock()
+        self._save_lock = threading.Lock()  # steps in other threads (diarization) save too
         self.save_timeline()  # a new run replaces the previous run's timeline right away
 
     # ---------- recording ----------
@@ -97,11 +98,12 @@ class Timings:
                 "total": round(end - start, 3), "spans": spans}
 
     def save_timeline(self) -> dict:
-        data = self.timeline()
-        if self.timeline_path is not None:
-            tmp = self.timeline_path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(data, indent=2))
-            tmp.replace(self.timeline_path)
+        with self._save_lock:
+            data = self.timeline()
+            if self.timeline_path is not None:
+                tmp = self.timeline_path.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(data, indent=2))
+                tmp.replace(self.timeline_path)
         return data
 
     def save(self, path: Path, total: float | None = None) -> None:
@@ -115,9 +117,9 @@ class Timings:
 #
 # Every span maps to one kind of work (CATEGORIES); a run's categories add up to its wall-clock
 # time. The pipeline runs mostly one step after another: FFmpeg -> WhisperX -> pyannote -> Claude
-# -> indexing. Scene detection is the exception: it runs in a separate process alongside the
-# audio steps, so it only counts for the part nobody was waiting on anything else (the rest is
-# reported under "parallel"). Runs on the cloud are also checked against the Stage 3 time budget
+# -> indexing. The exceptions are scene detection (a separate process alongside the audio steps)
+# and, on a GPU, diarization (a thread alongside transcription): they only count for the part
+# nothing else was running (the rest is reported under "parallel"). Runs on the cloud are also checked against the Stage 3 time budget
 # (BUDGET), whose lines group the same spans differently.
 
 CATEGORIES = {
@@ -227,17 +229,27 @@ def _split(timeline: dict, classify) -> dict[str, float]:
         for c in children:
             add(classify(c), c["duration"])
         add(classify(s), max(0.0, s["duration"] - sum(c["duration"] for c in children)))
-    for s in top:
-        if (s.get("meta") or {}).get("parallel"):
-            add(classify(s), _exposed(s, serial))
+    for s, exposed in _parallel_exposed(top, serial):
+        add(classify(s), exposed)
     add("other", max(0.0, total - sum(secs.values())))
     return secs
 
 
-def _exposed(span: dict, serial: list[dict]) -> float:
-    covered = _union([(s["start"], s["end"]) for s in serial])
+def _exposed(span: dict, covering: list[dict]) -> float:
+    covered = _union([(s["start"], s["end"]) for s in covering])
     overlap = sum(max(0.0, min(e, span["end"]) - max(b, span["start"])) for b, e in covered)
     return max(0.0, span["duration"] - overlap)
+
+
+def _parallel_exposed(top: list[dict], serial: list[dict]) -> list[tuple[dict, float]]:
+    """Each parallel span (scene detection, diarization alongside transcription) with the seconds
+    nothing else covered: not the serial steps, nor a parallel span counted before it (by start
+    time), so two of them running past the serial steps aren't counted twice."""
+    out, covering = [], list(serial)
+    for s in sorted((s for s in top if (s.get("meta") or {}).get("parallel")), key=lambda s: s["start"]):
+        out.append((s, _exposed(s, covering)))
+        covering.append(s)
+    return out
 
 
 def breakdown(timeline: dict) -> list[dict]:
@@ -253,13 +265,8 @@ def parallel_work(timeline: dict) -> list[dict]:
     """Steps that ran alongside others: their full duration and how much of it was hidden."""
     top = [s for s in timeline.get("spans", []) if not s.get("parent") and s.get("kind") != "cached"]
     serial = [s for s in top if not (s.get("meta") or {}).get("parallel")]
-    out = []
-    for s in top:
-        if (s.get("meta") or {}).get("parallel"):
-            exposed = _exposed(s, serial)
-            out.append({"label": s["label"], "duration": round(s["duration"], 3),
-                        "hidden": round(s["duration"] - exposed, 3)})
-    return out
+    return [{"label": s["label"], "duration": round(s["duration"], 3), "hidden": round(s["duration"] - exposed, 3)}
+            for s, exposed in _parallel_exposed(top, serial)]
 
 
 def budget_seconds(timeline: dict) -> dict[str, float]:

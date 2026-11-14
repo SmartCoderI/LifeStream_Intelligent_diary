@@ -319,6 +319,8 @@ def test_job_definition(plan):
     assert not any(e["name"] == "ANTHROPIC_API_KEY" for e in props.get("environment", []))
     assert job["parameters"]["output"] == f"s3://{BUCKET}/out/"
     assert {"name": "LLM_MODEL", "value": "claude-opus-5-5"} in props["environment"]
+    assert {"name": "WHISPER_MODEL", "value": "large-v3"} in props["environment"]
+    assert {"name": "ASR_BATCH_SIZE", "value": "16"} in props["environment"]
 
 
 # ---------- Stage 3, F11: uploads start the GPU job (EventBridge, no Lambda) ----------
@@ -427,8 +429,10 @@ def test_server_instance(plan):
 
 def test_server_role_is_scoped(plan):
     statements = {s["Sid"]: s for s in _policy_named(plan, "dashboard-server")}
-    assert set(statements) == {"SignUploadLinks", "ReadVideosAndResults", "DeleteVideos", "ListVideos",
-                               "ReadDeploySource", "RetryJobs", "CancelJobs", "FollowJobs", "ReadKeys"}
+    assert set(statements) == {"SignUploadLinks", "CancelPartUploads", "ReadVideosAndResults", "DeleteVideos",
+                               "ListVideos", "ReadDeploySource", "RetryJobs", "CancelJobs", "FollowJobs", "ReadKeys"}
+    assert statements["CancelPartUploads"]["Action"] == "s3:AbortMultipartUpload"
+    assert statements["CancelPartUploads"]["Resource"] == f"{BUCKET_ARN}/uploads/*"
     assert statements["CancelJobs"]["Action"] == "batch:TerminateJob"
     assert statements["CancelJobs"]["Resource"] == f"arn:aws:batch:{REGION}:{ACCOUNT}:job/*"
     assert statements["SignUploadLinks"]["Resource"] == f"{BUCKET_ARN}/uploads/*"

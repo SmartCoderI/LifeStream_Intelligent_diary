@@ -24,8 +24,9 @@
 Speaker names from the registry are applied to everything returned.
 
 Cloud mode (Stage 3, S3_BUCKET set): POST /api/videos takes JSON {date, filename} and returns
-{video_id, presigned_put_url, upload_headers}; the browser uploads straight to S3, which starts
-the GPU job (EventBridge -> Batch). POST /api/videos/{id}/uploaded marks the upload finished.
+{video_id, presigned_put_url, upload_headers, multipart}; the browser uploads straight to S3 (large
+files in parallel parts), which starts the GPU job (EventBridge -> Batch).
+POST /api/videos/{id}/uploaded marks the upload finished (and puts the parts together).
 Processing status comes from S3 (cloud/sync.py); /media redirects to a temporary S3 link.
 With API_KEY set, every /api route except /api/config needs it: X-API-Key header or the
 dashboard's `lifestream_key` cookie (so <img>/<video> requests carry it too). Otherwise 401.
@@ -54,20 +55,32 @@ from ..memory.store import MemoryConfigError, MemoryUnavailable
 from ..processing.media import SUPPORTED_EXTENSIONS
 from ..timing import STEP_CATEGORIES, Timings, aggregate, append_log, category_of, read_log, run_stats
 from .jobs import STEP_LABELS, Job, JobQueue, ProcessFn, pre_processing_spans, read_status, write_status
-from ..cloud.sync import CloudStore, CloudSync, live_spans
+from ..cloud.sync import MULTIPART_MIN_BYTES, CloudStore, CloudSync, live_spans
 
 VIDEO_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 KEYFRAME = re.compile(r"^frame_\d+\.jpg$")
 CHUNK = 1024 * 1024
 KEY_COOKIE = "lifestream_key"
-CLOUD_MAX_UPLOAD_BYTES = 5 * 1024**3  # one presigned PUT
+CLOUD_MAX_UPLOAD_BYTES = 5 * 1024**3  # the most one presigned PUT can take
 
 
 class UploadIn(BaseModel):
-    """Cloud upload request: the file itself goes straight to S3."""
+    """Cloud upload request: the file itself goes straight to S3. `multipart`: the client can
+    upload a large file in parallel parts (the dashboard does); it then also gets part links."""
     date: str
     filename: str
     size_bytes: int | None = None
+    multipart: bool = False
+
+
+class PartIn(BaseModel):
+    part_number: int
+    etag: str
+
+
+class UploadedIn(BaseModel):
+    """Sent when the upload finished; `parts` (number + ETag of each) for a parallel upload."""
+    parts: list[PartIn] | None = None
 
 
 class QueryIn(BaseModel):
@@ -299,19 +312,36 @@ def create_app(
                                     "The file is empty" if not body.size_bytes else "File is larger than 5 GB")
             key = cloud.upload_key(video_id, ext)
             url, headers = cloud.presign_upload(key, body.date)
+            multipart = None
+            if body.multipart and body.size_bytes and body.size_bytes >= MULTIPART_MIN_BYTES:
+                multipart = cloud.start_multipart(key, body.date, body.size_bytes)
             now = time.time()
             write_status(out_root / video_id, status="queued", step="uploading", progress=0, error=None,
                          original_name=name, size_bytes=body.size_bytes, created_at=now, date=body.date,
-                         s3_key=key, upload_started_at=now, uploaded_at=None, queued_at=None)
-            return {**item(out_root / video_id), "presigned_put_url": url, "upload_headers": headers}
+                         s3_key=key, upload_started_at=now, uploaded_at=None, queued_at=None,
+                         multipart_upload_id=multipart and multipart["upload_id"])
+            return {**item(out_root / video_id), "presigned_put_url": url, "upload_headers": headers,
+                    "multipart": multipart}
 
         @app.post("/api/videos/{video_id}/uploaded", status_code=202)
-        def upload_finished(video_id: str):
-            """The browser's PUT finished; the GPU job starts on its own (EventBridge)."""
+        def upload_finished(video_id: str, body: UploadedIn | None = None):
+            """The browser's upload finished. A parallel upload is put together here, which makes
+            the file appear in S3; the GPU job then starts on its own (EventBridge)."""
             folder = folder_for(video_id)
-            if read_status(folder).get("step") == "uploading":
-                now = time.time()
-                write_status(folder, step="queued", uploaded_at=now, queued_at=now)
+            status = read_status(folder)
+            if status.get("step") != "uploading":
+                return item(folder)
+            upload_id = status.get("multipart_upload_id")
+            if upload_id and body and body.parts:
+                try:
+                    cloud.complete_multipart(status["s3_key"], upload_id,
+                                             [(p.part_number, p.etag) for p in body.parts])
+                except Exception as e:  # noqa: BLE001 - e.g. a missing part
+                    raise HTTPException(400, f"Couldn't put the uploaded parts together: {e}")
+            elif upload_id:  # the client used the single PUT instead
+                cloud.abort_multipart(status["s3_key"], upload_id)
+            now = time.time()
+            write_status(folder, step="queued", uploaded_at=now, queued_at=now, multipart_upload_id=None)
             return item(folder)
 
     @app.post("/api/videos", status_code=202)
@@ -516,7 +546,9 @@ def create_app(
         # an upload the browser never finished can be deleted (nothing is processing it)
         if status.get("status") in ("queued", "processing") and status.get("step") != "uploading":
             raise HTTPException(409, "Can't delete a video while it is being processed")
-        if cloud and read_status(folder).get("s3_key"):
+        if cloud and status.get("s3_key"):
+            if status.get("multipart_upload_id"):
+                cloud.abort_multipart(status["s3_key"], status["multipart_upload_id"])
             cloud.delete_video(video_id)
         path = video_path(folder)
         # only delete files we own (uploads), never the user's original files elsewhere

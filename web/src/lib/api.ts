@@ -109,7 +109,7 @@ export interface RunStats {
 }
 export interface RunConfig {
   device?: string; whisper_model?: string; compute_type?: string; diarization_device?: string;
-  llm_model?: string | null; embed_model?: string;
+  llm_model?: string | null; embed_model?: string; asr_batch_size?: number; parallel_audio?: boolean;
 }
 export interface LatencySummary {
   /** run numbers cover one environment; queries cover all */
@@ -140,7 +140,15 @@ export interface SearchStatus { available: boolean; videos: number; chunks: numb
 
 /** Cloud mode (Stage 3): uploads go straight to S3 and processing runs on a cloud GPU. */
 export interface AppConfig { mode: "local" | "cloud"; auth: boolean }
-interface CloudUpload extends VideoItem { presigned_put_url: string; upload_headers: Record<string, string> }
+/** A large file goes up in parts, a few at a time (one connection rarely fills the uplink). */
+interface MultipartUpload { upload_id: string; part_size: number; part_urls: string[] }
+interface CloudUpload extends VideoItem {
+  presigned_put_url: string; upload_headers: Record<string, string>; multipart?: MultipartUpload | null;
+}
+export interface UploadedPart { part_number: number; etag: string }
+
+const PARALLEL_PARTS = 4;
+const PART_ATTEMPTS = 3;
 
 export class AuthError extends Error {}
 
@@ -221,6 +229,57 @@ function xhrUpload(method: string, url: string, body: Document | XMLHttpRequestB
   });
 }
 
+/** PUT every part (PARALLEL_PARTS at a time, each tried up to PART_ATTEMPTS times) and return
+ *  their ETags. The first failure stops the other transfers. */
+export async function uploadParts(file: Blob, upload: MultipartUpload, onProgress: (f: number) => void,
+                                  signal?: AbortSignal): Promise<UploadedPart[]> {
+  const count = upload.part_urls.length;
+  const loaded = new Array<number>(count).fill(0);
+  const parts: UploadedPart[] = [];
+  const stop = new AbortController();
+  const onAbort = () => stop.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  let next = 0;
+  let failure: unknown = null;
+  const report = () => onProgress(Math.min(1, loaded.reduce((a, b) => a + b, 0) / (file.size || 1)));
+
+  async function sendParts() {
+    while (next < count && failure === null) {
+      const i = next++;
+      const part = file.slice(i * upload.part_size, Math.min(file.size, (i + 1) * upload.part_size));
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const xhr = await xhrUpload("PUT", upload.part_urls[i], part, {},
+                                      (f) => { loaded[i] = f * part.size; report(); }, stop.signal);
+          if (xhr.status < 200 || xhr.status >= 300) throw new Error(`Upload to storage failed (${xhr.status})`);
+          const etag = xhr.getResponseHeader("ETag");
+          if (!etag) throw new Error("Storage didn't return the part's ETag (bucket CORS must expose it)");
+          parts[i] = { part_number: i + 1, etag };
+          loaded[i] = part.size;
+          report();
+          break;
+        } catch (e) {
+          loaded[i] = 0;
+          if (e instanceof UploadCancelled || attempt >= PART_ATTEMPTS || failure !== null) {
+            failure ??= e;
+            stop.abort();
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  try {
+    await Promise.all(Array.from({ length: Math.min(PARALLEL_PARTS, count) }, sendParts));
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+  if (signal?.aborted) throw new UploadCancelled();
+  if (failure !== null) throw failure;
+  return parts;
+}
+
 export const api = {
   listVideos: () => get<VideoItem[]>("/api/videos"),
   getVideo: (id: string) => get<VideoDetail>(`/api/videos/${id}`),
@@ -263,17 +322,22 @@ export const api = {
                     signal?: AbortSignal): Promise<VideoItem> {
     const config = await loadConfig();
     if (config.mode === "cloud") {
-      const video = await send<CloudUpload>("POST", "/api/videos", { date, filename: file.name, size_bytes: file.size });
-      let put: XMLHttpRequest;
+      const video = await send<CloudUpload>("POST", "/api/videos",
+                                            { date, filename: file.name, size_bytes: file.size, multipart: true });
+      let parts: UploadedPart[] | null = null;
       try {
-        put = await xhrUpload("PUT", video.presigned_put_url, file, video.upload_headers, onProgress, signal);
+        if (video.multipart) {
+          parts = await uploadParts(file, video.multipart, onProgress, signal);
+        } else {
+          const put = await xhrUpload("PUT", video.presigned_put_url, file, video.upload_headers, onProgress, signal);
+          if (put.status < 200 || put.status >= 300) throw new Error(`Upload to storage failed (${put.status})`);
+        }
       } catch (e) {
         // the video already exists on the server: mark it cancelled (and stop a job if the file landed)
         if (e instanceof UploadCancelled) await api.cancelVideo(video.video_id).catch(() => undefined);
         throw e;
       }
-      if (put.status < 200 || put.status >= 300) throw new Error(`Upload to storage failed (${put.status})`);
-      return send<VideoItem>("POST", `/api/videos/${video.video_id}/uploaded`, {});
+      return send<VideoItem>("POST", `/api/videos/${video.video_id}/uploaded`, parts ? { parts } : {});
     }
     const form = new FormData();
     form.append("file", file);

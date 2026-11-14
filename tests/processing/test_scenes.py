@@ -38,6 +38,15 @@ def test_scenes_cover_whole_video(scene_video):
     assert found[-1].end == pytest.approx(duration, abs=0.2)
 
 
+def test_sampled_frames_find_the_same_cuts(scene_video):
+    path, true_cuts = scene_video
+    duration = media.probe(path).duration
+    found = scenes.detect_scenes(path, duration, min_scene_len_s=2.0, sample_fps=5)
+    precision, recall = match_cuts(true_cuts, scenes.cut_times(found))
+    assert precision >= 0.8 and recall >= 0.8
+    assert found[0].start == pytest.approx(0, abs=0.1) and found[-1].end == pytest.approx(duration, abs=0.01)
+
+
 def test_keyframes_one_per_scene_middle():
     times = scenes.choose_keyframe_times([Scene(start=0, end=4), Scene(start=4, end=10)])
     assert times == [2.0, 7.0]

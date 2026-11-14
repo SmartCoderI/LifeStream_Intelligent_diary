@@ -81,7 +81,12 @@ resource "aws_iam_role" "server" {
 data "aws_iam_policy_document" "server" {
   statement {
     sid       = "SignUploadLinks"
-    actions   = ["s3:PutObject"] # the browser's presigned PUT runs with these permissions
+    actions   = ["s3:PutObject"] # the browser's presigned PUTs (whole file or parts) run with these permissions
+    resources = ["${local.bucket_arn}/uploads/*"]
+  }
+  statement {
+    sid       = "CancelPartUploads"
+    actions   = ["s3:AbortMultipartUpload"] # a cancelled or deleted upload that went up in parts
     resources = ["${local.bucket_arn}/uploads/*"]
   }
   statement {

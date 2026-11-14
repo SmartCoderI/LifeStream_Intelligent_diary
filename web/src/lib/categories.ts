@@ -39,5 +39,6 @@ export function parallelNote(items: ParallelWork[] | undefined): string | null {
 export function configLine(c: RunConfig | null | undefined): string {
   if (!c) return "";
   return [c.device?.toUpperCase(), c.whisper_model && `${c.whisper_model}${c.compute_type ? ` ${c.compute_type}` : ""}`,
+          c.asr_batch_size && `batch ${c.asr_batch_size}`, c.parallel_audio && "speakers alongside speech",
           c.llm_model].filter(Boolean).join(" · ");
 }

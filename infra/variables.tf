@@ -64,6 +64,23 @@ variable "llm_model" {
   default     = "claude-opus-5-5"
 }
 
+variable "whisper_model" {
+  description = "Whisper model the Batch job uses. The image has large-v3 and large-v3-turbo (several times faster to decode; check M1/M3b before switching)."
+  type        = string
+  default     = "large-v3"
+
+  validation {
+    condition     = contains(["large-v3", "large-v3-turbo"], var.whisper_model)
+    error_message = "The worker image only contains large-v3 and large-v3-turbo (see EXTRA_WHISPER_MODELS in the Dockerfile)."
+  }
+}
+
+variable "asr_batch_size" {
+  description = "Whisper segments transcribed at once on the GPU (the T4's 16 GB fits 16 with large-v3 float16 and diarization alongside)."
+  type        = number
+  default     = 16
+}
+
 variable "job_vcpus" {
   description = "vCPUs per job (g4dn.xlarge has 4)."
   type        = number

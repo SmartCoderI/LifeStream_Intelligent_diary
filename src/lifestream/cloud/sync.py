@@ -1,6 +1,6 @@
 """Stage 3 cloud mode, server side: the dashboard server's view of S3 and AWS Batch.
 
-    browser --PUT (presigned)--> s3://<bucket>/uploads/<video_id>/<video_id>.<ext>
+    browser --PUT (presigned; large files in parallel parts)--> s3://<bucket>/uploads/<video_id>/<video_id>.<ext>
           --EventBridge rule--> Batch GPU job (cloud/worker.py)
           --> s3://<bucket>/out/<video_id>/...  plus out/<video_id>/status.json after every step
 
@@ -29,7 +29,10 @@ from .worker import STATUS_FILE
 ACTIVE = ("queued", "processing")
 TERMINAL_JOB_STATES = ("SUCCEEDED", "FAILED")
 REAP_SECONDS = 15 * 60  # after a cancel, keep stopping jobs that show up late (EventBridge, retries)
-UPLOAD_URL_SECONDS = 3600          # time to finish a browser upload (a single PUT, up to 5 GB)
+UPLOAD_URL_SECONDS = 3600          # time to finish a browser upload (up to 5 GB)
+# Large uploads go up in parts, several at a time: one connection rarely uses the whole uplink.
+MULTIPART_PART_BYTES = 16 * 1024**2  # S3 needs >= 5 MiB per part (except the last), <= 10,000 parts
+MULTIPART_MIN_BYTES = 2 * MULTIPART_PART_BYTES  # smaller files: one PUT
 MEDIA_URL_SECONDS = 6 * 3600       # time to watch a video before the player's link expires
 
 IndexFn = Callable[[Path, Settings], "int | None"]
@@ -73,6 +76,32 @@ class CloudStore:
             "put_object", Params={"Bucket": self.bucket, "Key": key, "Metadata": {"date": date}},
             ExpiresIn=UPLOAD_URL_SECONDS, HttpMethod="PUT")
         return url, {"x-amz-meta-date": date}
+
+    def start_multipart(self, key: str, date: str, size_bytes: int) -> dict:
+        """A parallel upload: one presigned PUT link per part. The date is set here, so the parts
+        need no headers. The browser sends back each part's ETag for complete_multipart."""
+        upload_id = self.s3.create_multipart_upload(Bucket=self.bucket, Key=key, Metadata={"date": date})["UploadId"]
+        part_size = max(MULTIPART_PART_BYTES, -(-size_bytes // 10_000))
+        count = -(-size_bytes // part_size)
+        urls = [self.s3.generate_presigned_url(
+                    "upload_part", Params={"Bucket": self.bucket, "Key": key, "UploadId": upload_id, "PartNumber": n},
+                    ExpiresIn=UPLOAD_URL_SECONDS, HttpMethod="PUT")
+                for n in range(1, count + 1)]
+        return {"upload_id": upload_id, "part_size": part_size, "part_urls": urls}
+
+    def complete_multipart(self, key: str, upload_id: str, parts: list[tuple[int, str]]) -> None:
+        """parts: (part number, ETag) for every part. The object (and its S3 event) appears now."""
+        self.s3.complete_multipart_upload(
+            Bucket=self.bucket, Key=key, UploadId=upload_id,
+            MultipartUpload={"Parts": [{"PartNumber": n, "ETag": etag} for n, etag in sorted(parts)]})
+
+    def abort_multipart(self, key: str, upload_id: str) -> None:
+        """Discard an unfinished parallel upload (the bucket lifecycle also does this after a day)."""
+        try:
+            self.s3.abort_multipart_upload(Bucket=self.bucket, Key=key, UploadId=upload_id)
+        except Exception as e:  # noqa: BLE001 - already completed or aborted
+            if not _is_missing(e) and "NoSuchUpload" not in str(e):
+                raise
 
     def presign_download(self, key: str) -> str:
         return self.s3.generate_presigned_url("get_object", Params={"Bucket": self.bucket, "Key": key},
@@ -255,6 +284,8 @@ class CloudSync:
                          finished_at=now)
         if local.get("step") == "uploading" and local.get("s3_key"):
             try:
+                if local.get("multipart_upload_id"):
+                    self.store.abort_multipart(local["s3_key"], local["multipart_upload_id"])
                 self.store.delete_object(local["s3_key"])
             except Exception as e:  # noqa: BLE001 - the GPU job then fails at download
                 self.log(f"[{video_id}] couldn't delete the partial upload: {e}")

@@ -1,11 +1,12 @@
 """Download every model the worker needs at image build time (M3a: a job never waits on downloads).
 
-    python -m lifestream.cloud.prefetch --whisper-model large-v3        (needs HF_TOKEN for pyannote)
+    python -m lifestream.cloud.prefetch --whisper-model large-v3,large-v3-turbo   (needs HF_TOKEN for pyannote)
     HF_HUB_OFFLINE=1 python -m lifestream.cloud.prefetch --verify       (fails if anything is missing)
 
 Where the files land is set by HF_HOME (Whisper, pyannote), TORCH_HOME (word alignment)
 and NLTK_DATA (sentence splitter). The Dockerfile points all three at /opt/models.
 The voice-activity model ships inside the whisperx package, so it needs no download.
+Several Whisper models (comma-separated) can be baked in; the job's WHISPER_MODEL picks one.
 """
 
 from __future__ import annotations
@@ -15,14 +16,20 @@ import os
 import sys
 
 
+def whisper_models(value: str) -> list[str]:
+    """'large-v3, large-v3-turbo,' -> ['large-v3', 'large-v3-turbo']"""
+    return [m.strip() for m in value.split(",") if m.strip()]
+
+
 def prefetch(whisper_model: str, diarization_model: str, language: str, hf_token: str | None) -> None:
     from faster_whisper.utils import download_model
     from huggingface_hub import snapshot_download
     import nltk
     import whisperx
 
-    print(f"Whisper: {whisper_model}", flush=True)
-    download_model(whisper_model)
+    for name in whisper_models(whisper_model):
+        print(f"Whisper: {name}", flush=True)
+        download_model(name)
     print(f"Alignment model: {language}", flush=True)
     whisperx.load_align_model(language_code=language, device="cpu")
     print("Sentence splitter: punkt_tab", flush=True)
@@ -43,7 +50,8 @@ def verify(whisper_model: str, diarization_model: str, language: str) -> None:
     import nltk
     import whisperx
 
-    download_model(whisper_model, local_files_only=True)
+    for name in whisper_models(whisper_model):
+        download_model(name, local_files_only=True)
     whisperx.load_align_model(language_code=language, device="cpu", model_cache_only=True)
     nltk.data.find("tokenizers/punkt_tab/english/")
     Pipeline.from_pretrained(diarization_model)
