@@ -370,3 +370,48 @@ def test_latency_summary(tmp_path, format_samples):
         assert summary["config"]["whisper_model"]
         run = client.get("/api/latency/runs").json()[0]
         assert run["stats"]["bottleneck"] is not None and run["stats"]["breakdown"]
+
+
+# ---------------- cancel (local mode) ----------------
+import threading  # noqa: E402
+
+
+def test_cancel_a_queued_video_skips_it(tmp_path, format_samples):
+    calls = []
+    app = create_app(out_root=tmp_path / "out", uploads_dir=tmp_path / "uploads", settings=Settings(),
+                     process_fn=lambda *a, **k: calls.append(1), start_worker=False, web_dist=None,
+                     index_fn=fake_index, unindex_fn=lambda v, s: None)
+    with TestClient(app) as client:
+        upload(client, format_samples["mp4"], name="Team Meeting.mp4")
+        r = client.post("/api/videos/team-meeting/cancel")
+        assert r.status_code == 202 and r.json()["status"] == "cancelled"
+        app.state.jobs.start()
+        time.sleep(0.3)
+        assert calls == []  # never processed
+        assert client.get("/api/videos/team-meeting/status").json()["status"] == "cancelled"
+        app.state.jobs.stop()
+
+
+def test_cancel_a_running_video_stops_at_the_next_step(make_client, format_samples):
+    started, release = threading.Event(), threading.Event()
+
+    def slow_process(video, date, out_root, settings, *, video_id, on_step, **kw):
+        on_step("transcribing")
+        started.set()
+        release.wait(5)
+        on_step("diarizing")        # the cancel takes effect here
+        raise AssertionError("should have stopped")
+
+    with make_client(process_fn=slow_process) as client:
+        upload(client, format_samples["mp4"], name="Team Meeting.mp4")
+        assert started.wait(5)
+        r = client.post("/api/videos/team-meeting/cancel")
+        assert r.status_code == 202 and r.json()["step_label"] == "Stopping after this step…"
+        release.set()
+        for _ in range(50):
+            status = client.get("/api/videos/team-meeting/status").json()
+            if status["status"] == "cancelled":
+                break
+            time.sleep(0.1)
+        assert status["status"] == "cancelled" and status["step_label"] == "Cancelled"
+        assert client.post("/api/videos/team-meeting/cancel").status_code == 409

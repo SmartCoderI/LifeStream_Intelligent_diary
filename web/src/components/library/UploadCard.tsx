@@ -1,18 +1,19 @@
 import { CloudUpload, FileVideo, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, loadConfig, MAX_UPLOAD_BYTES, type VideoItem } from "../../lib/api";
+import { api, loadConfig, MAX_UPLOAD_BYTES, UploadCancelled, type VideoItem } from "../../lib/api";
 import { fileSize, todayIso } from "../../lib/format";
 import { ProgressBar } from "./StatusBadge";
 
 const ACCEPT = ".mp4,.mov,.mkv,.m4v,.webm,.avi";
 
-export default function UploadCard({ onUploaded }: { onUploaded: (v: VideoItem) => void }) {
+export default function UploadCard({ onUploaded }: { onUploaded: (v: VideoItem | null) => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [date, setDate] = useState(todayIso());
   const [drag, setDrag] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
+  const abort = useRef<AbortController | null>(null);
   const [maxBytes, setMaxBytes] = useState(MAX_UPLOAD_BYTES.local);
   useEffect(() => { loadConfig().then((c) => setMaxBytes(MAX_UPLOAD_BYTES[c.mode])); }, []);
   const maxLabel = `${maxBytes / 1024 ** 3} GB`;
@@ -30,15 +31,18 @@ export default function UploadCard({ onUploaded }: { onUploaded: (v: VideoItem) 
     if (!file) return;
     setError(null);
     setProgress(0);
+    abort.current = new AbortController();
     try {
-      const video = await api.uploadVideo(file, date, setProgress);
+      const video = await api.uploadVideo(file, date, setProgress, abort.current.signal);
       onUploaded(video);
       setFile(null);
       if (input.current) input.current.value = "";
     } catch (e) {
-      setError((e as Error).message);
+      if (e instanceof UploadCancelled) onUploaded(null);  // refresh the list: it shows as Cancelled
+      else setError((e as Error).message);
     } finally {
       setProgress(null);
+      abort.current = null;
     }
   };
 
@@ -79,6 +83,9 @@ export default function UploadCard({ onUploaded }: { onUploaded: (v: VideoItem) 
         <button className="btn btn-primary" disabled={!file || !date || uploading} onClick={submit}>
           {uploading ? `Uploading… ${Math.round(progress! * 100)}%` : "Upload and process"}
         </button>
+        {uploading && (
+          <button className="btn" onClick={() => abort.current?.abort()}>Cancel upload</button>
+        )}
       </div>
     </section>
   );

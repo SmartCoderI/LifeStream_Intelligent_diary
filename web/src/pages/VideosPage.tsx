@@ -18,6 +18,16 @@ export default function VideosPage() {
     refresh();
   };
 
+  const cancel = async (v: VideoItem) => {
+    if (!window.confirm(`Cancel processing "${v.title}"? You can retry it later.`)) return;
+    try {
+      await api.cancelVideo(v.video_id);
+    } catch (e) {
+      window.alert((e as Error).message);
+    }
+    refresh();
+  };
+
   const retry = async (v: VideoItem) => {
     try {
       await api.retryVideo(v.video_id);
@@ -38,7 +48,7 @@ export default function VideosPage() {
         <div>
           {error && <div className="card empty error-text" role="alert">Can't reach the server: {error}</div>}
           {!error && videos === null && <div className="card empty">Loading…</div>}
-          {videos && <VideoList videos={videos} onDelete={remove} onRetry={retry} />}
+          {videos && <VideoList videos={videos} onDelete={remove} onRetry={retry} onCancel={cancel} />}
         </div>
       </div>
     </>

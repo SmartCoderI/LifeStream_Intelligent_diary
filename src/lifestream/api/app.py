@@ -236,7 +236,9 @@ def create_app(
             "uploaded_at": created,
             "status": state,
             "step": step,
-            "step_label": STEP_LABELS.get(step or "", "") if state != "failed" else "Failed",
+            "step_label": ("Failed" if state == "failed" else "Stopping after this step…"
+                           if status.get("cancel_requested") and state == "processing"
+                           else STEP_LABELS.get(step or "", "")),
             "progress": status.get("progress", 100 if state == "done" else 0),
             "error": status.get("error"),
             "type": ((summary or {}).get("classification") or {}).get("type"),
@@ -395,6 +397,19 @@ def create_app(
         if not KEYFRAME.match(name) or not (folder / "keyframes" / name).exists():
             raise HTTPException(404, "Keyframe not found")
         return FileResponse(folder / "keyframes" / name, media_type="image/jpeg")
+
+    @app.post("/api/videos/{video_id}/cancel", status_code=202)
+    def cancel_video(video_id: str):
+        """Stop a video that is uploading, waiting or processing. It stays in the list as
+        Cancelled (Retry or Delete it later)."""
+        folder = folder_for(video_id)
+        status = read_status(folder)
+        if status.get("status") not in ("queued", "processing"):
+            raise HTTPException(409, "This video isn't being processed")
+        if status.get("step") == "indexing":
+            raise HTTPException(409, "It's almost done (adding to search) and can't be cancelled now")
+        jobs.cancel(video_id)
+        return item(folder)
 
     @app.post("/api/videos/{video_id}/retry", status_code=202)
     def retry_video(video_id: str):

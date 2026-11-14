@@ -91,6 +91,8 @@ h1, h2, h3 { margin: 0; line-height: 1.25; }
 .badge-done { background: var(--success-soft); color: var(--success); }
 .badge-processing, .badge-queued { background: var(--accent-soft); color: var(--accent-text); }
 .badge-failed { background: var(--danger-soft); color: var(--danger); }
+.badge-cancelled { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
+.status-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .badge-type { background: var(--accent-soft); color: var(--accent-text); text-transform: capitalize; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

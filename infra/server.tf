@@ -115,6 +115,11 @@ data "aws_iam_policy_document" "server" {
     resources = concat([local.job_queue_arn], local.job_definition_arns)
   }
   statement {
+    sid       = "CancelJobs" # the dashboard's Cancel button
+    actions   = ["batch:TerminateJob"]
+    resources = ["arn:${local.partition}:batch:${var.region}:${local.account_id}:job/*"]
+  }
+  statement {
     sid       = "FollowJobs"
     actions   = ["batch:ListJobs", "batch:DescribeJobs"] # AWS only allows "*" for these
     resources = ["*"]

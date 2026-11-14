@@ -27,6 +27,8 @@ from ..timing import STEP_CATEGORIES, append_log
 from .worker import STATUS_FILE
 
 ACTIVE = ("queued", "processing")
+TERMINAL_JOB_STATES = ("SUCCEEDED", "FAILED")
+REAP_SECONDS = 15 * 60  # after a cancel, keep stopping jobs that show up late (EventBridge, retries)
 UPLOAD_URL_SECONDS = 3600          # time to finish a browser upload (a single PUT, up to 5 GB)
 MEDIA_URL_SECONDS = 6 * 3600       # time to watch a video before the player's link expires
 
@@ -118,6 +120,13 @@ class CloudStore:
     def download_file(self, key: str, dest: Path) -> None:
         self.s3.download_file(self.bucket, key, str(dest))
 
+    def delete_object(self, key: str) -> None:
+        self.s3.delete_object(Bucket=self.bucket, Key=key)
+
+    def terminate_job(self, job_id: str, reason: str) -> None:
+        """Stops a Batch job in any state (waiting, starting or running)."""
+        self.batch.terminate_job(jobId=job_id, reason=reason)
+
     def clear_worker_status(self, video_id: str) -> None:
         self.s3.delete_object(Bucket=self.bucket, Key=f"out/{video_id}/{STATUS_FILE}")
 
@@ -173,6 +182,7 @@ class CloudSync:
         self.index_fn, self.interval, self.log = index_fn, interval, log
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()  # a cancel and a sync never write one video's status at once
 
     def start(self) -> None:
         if self._thread is None:
@@ -196,15 +206,22 @@ class CloudSync:
 
     # ---------- one pass ----------
     def tick(self) -> None:
-        active = [f for f in sorted(self.out_root.iterdir()) if f.is_dir()
-                  and (s := read_status(f)).get("status") in ACTIVE and s.get("s3_key")] \
-            if self.out_root.exists() else []
+        folders = [f for f in sorted(self.out_root.iterdir()) if f.is_dir()] if self.out_root.exists() else []
+        active, cancelled = [], []
+        for f in folders:
+            s = read_status(f)
+            if not s.get("s3_key"):
+                continue
+            if s.get("status") in ACTIVE:
+                active.append(f)
+            elif s.get("status") == "cancelled" and time.time() - (s.get("cancelled_at") or 0) < REAP_SECONDS:
+                cancelled.append(f)
         jobs: dict[str, dict] | None = None
 
         def batch_jobs() -> dict[str, dict]:
             nonlocal jobs
             if jobs is None:
-                since = min(read_status(f).get("created_at") or time.time() for f in active) - 600
+                since = min(read_status(f).get("created_at") or time.time() for f in active + cancelled) - 600
                 try:
                     jobs = self.store.batch_jobs(since) if self.store.batch is not None else {}
                 except Exception as e:  # noqa: BLE001 - informational; the worker status is the source of truth
@@ -214,9 +231,59 @@ class CloudSync:
 
         for folder in active:
             try:
-                self.refresh(folder, batch_jobs)
+                with self._lock:
+                    if read_status(folder).get("status") in ACTIVE:  # not cancelled meanwhile
+                        self.refresh(folder, batch_jobs)
             except Exception as e:  # noqa: BLE001
                 self.log(f"[{folder.name}] sync failed: {e}")
+        for folder in cancelled:
+            try:
+                self._stop_jobs(folder, batch_jobs)
+            except Exception as e:  # noqa: BLE001
+                self.log(f"[{folder.name}] couldn't stop its job: {e}")
+
+    # ---------- cancel ----------
+    def cancel(self, video_id: str) -> None:
+        """Stop a cloud video wherever it is: delete an upload that may have landed, and terminate
+        its Batch job (waiting or running). Jobs that show up after this (an upload finishing at the
+        same moment) are stopped by the next syncs for REAP_SECONDS."""
+        folder = self.out_root / video_id
+        with self._lock:
+            local = read_status(folder)
+            now = time.time()
+            write_status(folder, status="cancelled", step="cancelled", error=None, cancelled_at=now,
+                         finished_at=now)
+        if local.get("step") == "uploading" and local.get("s3_key"):
+            try:
+                self.store.delete_object(local["s3_key"])
+            except Exception as e:  # noqa: BLE001 - the GPU job then fails at download
+                self.log(f"[{video_id}] couldn't delete the partial upload: {e}")
+        lookup: dict[str, dict] | None = None
+
+        def batch_jobs() -> dict[str, dict]:
+            nonlocal lookup
+            if lookup is None:
+                lookup = self.store.batch_jobs((local.get("created_at") or now) - 600) \
+                    if self.store.batch is not None else {}
+            return lookup
+
+        self._stop_jobs(folder, batch_jobs)
+
+    def _stop_jobs(self, folder: Path, batch_jobs: Callable[[], dict[str, dict]]) -> None:
+        local = read_status(folder)
+        stopped = set(local.get("terminated_jobs") or [])
+        ids = set()
+        job = batch_jobs().get(self.store.uri(local["s3_key"])) if local.get("s3_key") else None
+        if job and job["status"] not in TERMINAL_JOB_STATES:
+            ids.add(job["job_id"])
+        if local.get("job_id") and not job:
+            ids.add(local["job_id"])  # known from the worker, but not listed (yet)
+        for job_id in sorted(ids - stopped):
+            self.store.terminate_job(job_id, "Cancelled from the dashboard")
+            stopped.add(job_id)
+            self.log(f"[{folder.name}] stopped GPU job {job_id}")
+        if stopped != set(local.get("terminated_jobs") or []):
+            write_status(folder, terminated_jobs=sorted(stopped))
 
     def refresh(self, folder: Path, batch_jobs: Callable[[], dict[str, dict]]) -> None:
         local = read_status(folder)

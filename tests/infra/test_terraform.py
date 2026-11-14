@@ -357,15 +357,25 @@ def _upload_event(key: str, bucket: str = BUCKET) -> dict:
     ("uploads/team-sync/team-sync.mp4.part", False),
 ])
 def test_upload_rule_starts_jobs_only_for_videos_under_uploads(plan, key, starts_job):
-    pattern = json.loads(_one(plan, "aws_cloudwatch_event_rule")["event_pattern"])
-    assert _matches(pattern, _upload_event(key)) is starts_job
+    patterns = [json.loads(r["event_pattern"]) for r in _resources(plan, "aws_cloudwatch_event_rule")]
+    assert any(_matches(p, _upload_event(key)) for p in patterns) is starts_job
+
+
+def test_upload_rules_stay_under_eventbridges_complexity_limit(plan):
+    """AWS rejects 6 "uploads/*<ext>" wildcards in one rule (found on the first deploy); 5 pass."""
+    rules = _resources(plan, "aws_cloudwatch_event_rule")
+    assert len(rules) == 2 and len(_resources(plan, "aws_cloudwatch_event_target")) == 2
+    for rule in rules:
+        keys = json.loads(rule["event_pattern"])["detail"]["object"]["key"]
+        assert len(keys) <= 3
 
 
 def test_upload_rule_ignores_other_buckets_and_events(plan):
-    pattern = json.loads(_one(plan, "aws_cloudwatch_event_rule")["event_pattern"])
-    assert not _matches(pattern, _upload_event("uploads/a/a.mp4", bucket="someone-else"))
-    deleted = {**_upload_event("uploads/a/a.mp4"), "detail-type": "Object Deleted"}
-    assert not _matches(pattern, deleted)
+    for rule in _resources(plan, "aws_cloudwatch_event_rule"):
+        pattern = json.loads(rule["event_pattern"])
+        assert not _matches(pattern, _upload_event("uploads/a/a.mp4", bucket="someone-else"))
+        deleted = {**_upload_event("uploads/a/a.mp4"), "detail-type": "Object Deleted"}
+        assert not _matches(pattern, deleted)
 
 
 def test_upload_rule_extensions_match_the_app():
@@ -377,7 +387,7 @@ def test_upload_rule_extensions_match_the_app():
 
 def test_upload_target_submits_the_worker_job(plan):
     assert _one(plan, "aws_s3_bucket_notification")["eventbridge"] is True
-    target = _one(plan, "aws_cloudwatch_event_target")
+    target = _resources(plan, "aws_cloudwatch_event_target")[0]
     assert target["batch_target"][0]["job_definition"] == "lifestream-worker"
     transformer = target["input_transformer"][0]
     assert transformer["input_paths"] == {"key": "$.detail.object.key"}
@@ -418,7 +428,9 @@ def test_server_instance(plan):
 def test_server_role_is_scoped(plan):
     statements = {s["Sid"]: s for s in _policy_named(plan, "dashboard-server")}
     assert set(statements) == {"SignUploadLinks", "ReadVideosAndResults", "DeleteVideos", "ListVideos",
-                               "ReadDeploySource", "RetryJobs", "FollowJobs", "ReadKeys"}
+                               "ReadDeploySource", "RetryJobs", "CancelJobs", "FollowJobs", "ReadKeys"}
+    assert statements["CancelJobs"]["Action"] == "batch:TerminateJob"
+    assert statements["CancelJobs"]["Resource"] == f"arn:aws:batch:{REGION}:{ACCOUNT}:job/*"
     assert statements["SignUploadLinks"]["Resource"] == f"{BUCKET_ARN}/uploads/*"
     assert set(_as_list(statements["ReadVideosAndResults"]["Resource"])) == \
         {f"{BUCKET_ARN}/uploads/*", f"{BUCKET_ARN}/out/*"}

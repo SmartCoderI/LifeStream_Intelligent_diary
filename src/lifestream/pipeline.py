@@ -123,7 +123,8 @@ def process_video(
                    min_speakers=min_speakers, max_speakers=max_speakers, force=force,
                    run_llm=run_llm, parallel=parallel, log=log, step=on_step or (lambda name: None))
     except Exception as e:
-        append_log(runs_log_path(out_root), timings.finish("failed", str(e) or type(e).__name__))
+        status = "cancelled" if getattr(e, "cancelled", False) else "failed"
+        append_log(runs_log_path(out_root), timings.finish(status, str(e) or type(e).__name__))
         raise
     record = timings.finish("done")
     append_log(runs_log_path(out_root), record)

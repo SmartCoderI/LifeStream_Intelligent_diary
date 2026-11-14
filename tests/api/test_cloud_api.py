@@ -237,3 +237,67 @@ def test_a_cloud_upload_is_recorded_on_the_latency_page(app, client, s3, tmp_pat
 
     timeline = client.get("/api/videos/team-sync/timeline").json()  # the video page's Timing tab
     assert timeline["status"] == "done" and timeline["stats"]["environment"] == "cloud"
+
+
+# ---------- cancel ----------
+
+def _job(batch, status="RUNNABLE", job_id="job-7"):
+    batch.jobs.append({"jobId": job_id, "status": status, "createdAt": 5,
+                       "parameters": {"input": f"s3://{BUCKET}/uploads/team-sync/team-sync.mp4"}})
+
+
+def test_cancel_during_upload_deletes_the_file_and_stops_a_late_job(app, client, s3, batch):
+    new_upload(client)
+    s3.put_object(Bucket=BUCKET, Key="uploads/team-sync/team-sync.mp4", Body=b"video")  # the PUT just landed
+    r = client.post("/api/videos/team-sync/cancel")
+    assert r.status_code == 202 and r.json()["status"] == "cancelled" and r.json()["step_label"] == "Cancelled"
+    assert s3.list_objects_v2(Bucket=BUCKET).get("KeyCount") == 0
+    _job(batch)                      # EventBridge had already started a job
+    app.state.jobs.tick()
+    assert batch.terminated == ["job-7"]
+    app.state.jobs.tick()            # stopped once, not again
+    assert batch.terminated == ["job-7"]
+
+
+def test_cancel_while_waiting_for_a_gpu_terminates_the_job(app, client, batch):
+    new_upload(client)
+    client.post("/api/videos/team-sync/uploaded")
+    _job(batch)
+    assert client.post("/api/videos/team-sync/cancel").status_code == 202
+    assert batch.terminated == ["job-7"]
+    assert client.get("/api/videos/team-sync/status").json()["status"] == "cancelled"
+
+
+def test_cancel_while_processing_terminates_the_job_and_stays_cancelled(app, client, s3, batch):
+    new_upload(client)
+    client.post("/api/videos/team-sync/uploaded")
+    _job(batch, status="RUNNING")
+    s3.put_object(Bucket=BUCKET, Key="out/team-sync/status.json", Body=json.dumps(
+        {"status": "processing", "step": "transcribing", "progress": 10, "job_id": "job-7"}).encode())
+    app.state.jobs.tick()
+    assert client.get("/api/videos/team-sync/status").json()["step"] == "transcribing"
+    assert client.post("/api/videos/team-sync/cancel").status_code == 202
+    assert batch.terminated == ["job-7"]
+    app.state.jobs.tick()  # the worker's last status still says "processing": it must not come back
+    assert client.get("/api/videos/team-sync/status").json()["status"] == "cancelled"
+
+
+def test_cancel_is_refused_when_nothing_is_running(app, client, s3, tmp_path, format_samples):
+    assert client.post("/api/videos/nope/cancel").status_code == 404
+    new_upload(client)
+    client.post("/api/videos/team-sync/uploaded")
+    finish_processing(app, s3, tmp_path, format_samples)
+    r = client.post("/api/videos/team-sync/cancel")
+    assert r.status_code == 409 and "isn't being processed" in r.json()["detail"]
+
+
+def test_cancelled_video_can_be_retried_or_deleted(app, client, s3, batch):
+    new_upload(client)
+    client.post("/api/videos/team-sync/uploaded")
+    client.post("/api/videos/team-sync/cancel")
+    assert client.post("/api/videos/team-sync/retry").status_code == 202  # the upload had finished
+    assert batch.submitted[-1]["parameters"]["input"].endswith("uploads/team-sync/team-sync.mp4")
+    new_upload(client, filename="Other.mp4")
+    client.post("/api/videos/other/cancel")                               # cancelled mid-upload
+    assert client.post("/api/videos/other/retry").status_code == 409      # nothing to process
+    assert client.delete("/api/videos/other").status_code == 204

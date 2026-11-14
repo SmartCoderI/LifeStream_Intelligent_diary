@@ -48,7 +48,17 @@ STEP_LABELS = {
     "indexing": "Adding to search",
     "done": "Completed",
     "failed": "Failed",
+    "cancelled": "Cancelled",
 }
+ACTIVE = ("queued", "processing")
+
+
+class JobCancelled(Exception):
+    """Raised at the next step boundary after a video is cancelled (local mode)."""
+    cancelled = True
+
+    def __init__(self) -> None:
+        super().__init__("Cancelled")
 
 
 def read_status(folder: Path) -> dict:
@@ -117,6 +127,7 @@ class JobQueue:
         self.process_fn = process_fn or process_video
         self._queue: queue.Queue[Job | None] = queue.Queue()
         self._thread: threading.Thread | None = None
+        self._stop_requested: set[str] = set()  # running videos to stop at their next step
 
     def start(self) -> None:
         if self._thread is None:
@@ -131,6 +142,7 @@ class JobQueue:
             self._thread = None
 
     def submit(self, job: Job) -> None:
+        self._stop_requested.discard(job.video_id)
         write_status(self.out_root / job.video_id, status="queued", step="queued",
                      progress=0, error=None, video_path=str(job.video_path), date=job.date,
                      queued_at=time.time(), started_at=None, step_started_at=None, finished_at=None)
@@ -150,17 +162,31 @@ class JobQueue:
             if data.get("status") in ("queued", "processing") and data.get("video_path"):
                 self.submit(Job(status_file.parent.name, Path(data["video_path"]), data["date"]))
 
+    def cancel(self, video_id: str) -> None:
+        """A queued video is skipped; a running one stops at its next step (a thread can't be
+        interrupted in the middle of transcription)."""
+        folder = self.out_root / video_id
+        if read_status(folder).get("status") == "processing":
+            self._stop_requested.add(video_id)
+            write_status(folder, cancel_requested=True)
+        else:
+            write_status(folder, status="cancelled", step="cancelled", error=None, finished_at=time.time())
+
     def _worker(self) -> None:
         while True:
             job = self._queue.get()
             if job is None:
                 return
+            if read_status(self.out_root / job.video_id).get("status") != "queued":
+                continue  # cancelled (or deleted) while it waited
             self._run(job)
 
     def _run(self, job: Job) -> None:
         folder = self.out_root / job.video_id
 
         def on_step(name: str) -> None:
+            if job.video_id in self._stop_requested:
+                raise JobCancelled()
             write_status(folder, status="processing", step=name, progress=STEP_PROGRESS.get(name, 0),
                          step_started_at=time.time())
 
@@ -172,7 +198,12 @@ class JobQueue:
                             video_id=job.video_id, on_step=on_step, log=lambda m: None,
                             extra_spans=pre_processing_spans(status, started), source="dashboard")
             write_status(folder, status="done", step="done", progress=100, finished_at=time.time())
+        except JobCancelled:
+            write_status(folder, status="cancelled", step="cancelled", error=None, cancel_requested=False,
+                         finished_at=time.time())
         except Exception as e:  # report any failure to the dashboard
             write_status(folder, status="failed", step="failed", error=str(e) or type(e).__name__,
                          finished_at=time.time())
             traceback.print_exc()
+        finally:
+            self._stop_requested.discard(job.video_id)

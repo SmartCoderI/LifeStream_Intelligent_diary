@@ -1,6 +1,10 @@
 // Types mirror the Python API (src/lifestream/api/app.py).
 
-export type Status = "queued" | "processing" | "done" | "failed" | "unknown";
+export type Status = "queued" | "processing" | "done" | "failed" | "cancelled" | "unknown";
+
+/** Can this video still be cancelled? (Not in the last few seconds, while it's added to search.) */
+export const cancellable = (v: { status: Status; step: string | null }) =>
+  (v.status === "queued" || v.status === "processing") && v.step !== "indexing";
 
 export interface VideoItem {
   video_id: string;
@@ -195,16 +199,24 @@ async function send<T>(method: string, url: string, body: unknown): Promise<T> {
   return data as T;
 }
 
-/** XHR (not fetch) so the upload can report progress. */
+export class UploadCancelled extends Error {
+  constructor() { super("Upload cancelled"); }
+}
+
+/** XHR (not fetch) so the upload can report progress; `signal` aborts it. */
 function xhrUpload(method: string, url: string, body: Document | XMLHttpRequestBodyInit,
-                   headers: Record<string, string>, onProgress: (f: number) => void): Promise<XMLHttpRequest> {
+                   headers: Record<string, string>, onProgress: (f: number) => void,
+                   signal?: AbortSignal): Promise<XMLHttpRequest> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new UploadCancelled());
     const xhr = new XMLHttpRequest();
     xhr.open(method, url);
     for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
     xhr.onload = () => resolve(xhr);
     xhr.onerror = () => reject(new Error("Upload failed: can't reach the server"));
+    xhr.onabort = () => reject(new UploadCancelled());
+    signal?.addEventListener("abort", () => xhr.abort(), { once: true });
     xhr.send(body);
   });
 }
@@ -234,6 +246,9 @@ export const api = {
     }
   },
 
+  /** Stop a video that is uploading, waiting or processing; it stays listed as Cancelled. */
+  cancelVideo: (id: string) => send<VideoItem>("POST", `/api/videos/${id}/cancel`, {}),
+
   async deleteVideo(id: string): Promise<void> {
     const res = await fetch(`/api/videos/${id}`, { method: "DELETE" });
     if (!res.ok) {
@@ -244,11 +259,19 @@ export const api = {
 
   /** Upload with progress. Local: the file goes to this server. Cloud: the server returns a
    *  presigned S3 link, the file goes straight to S3, and the GPU job starts on its own. */
-  async uploadVideo(file: File, date: string, onProgress: (fraction: number) => void): Promise<VideoItem> {
+  async uploadVideo(file: File, date: string, onProgress: (fraction: number) => void,
+                    signal?: AbortSignal): Promise<VideoItem> {
     const config = await loadConfig();
     if (config.mode === "cloud") {
       const video = await send<CloudUpload>("POST", "/api/videos", { date, filename: file.name, size_bytes: file.size });
-      const put = await xhrUpload("PUT", video.presigned_put_url, file, video.upload_headers, onProgress);
+      let put: XMLHttpRequest;
+      try {
+        put = await xhrUpload("PUT", video.presigned_put_url, file, video.upload_headers, onProgress, signal);
+      } catch (e) {
+        // the video already exists on the server: mark it cancelled (and stop a job if the file landed)
+        if (e instanceof UploadCancelled) await api.cancelVideo(video.video_id).catch(() => undefined);
+        throw e;
+      }
       if (put.status < 200 || put.status >= 300) throw new Error(`Upload to storage failed (${put.status})`);
       return send<VideoItem>("POST", `/api/videos/${video.video_id}/uploaded`, {});
     }
@@ -256,7 +279,7 @@ export const api = {
     form.append("file", file);
     form.append("date", date);
     form.append("client_started_at", String(Date.now()));  // upload span of the latency timeline
-    const xhr = await xhrUpload("POST", "/api/videos", form, {}, onProgress);
+    const xhr = await xhrUpload("POST", "/api/videos", form, {}, onProgress, signal);
     let body: any = {};
     try { body = JSON.parse(xhr.responseText); } catch { /* not JSON */ }
     if (xhr.status < 200 || xhr.status >= 300) fail(xhr.status, body.detail, `Upload failed (${xhr.status})`);

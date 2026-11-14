@@ -10,22 +10,30 @@ resource "aws_s3_bucket_notification" "data" {
   eventbridge = true # free; EventBridge rules pay nothing for AWS service events
 }
 
+# The file type check: only these extensions under uploads/ start a job (anything else is ignored).
+# EventBridge rejects a rule with 6 "uploads/*<ext>" wildcards as too complex (5 is its limit for
+# these patterns), so the extensions are split over rules of 3; each starts the same job.
+locals {
+  upload_rule_groups = { for i, group in chunklist(local.video_extensions, 3) : tostring(i) => group }
+}
+
 resource "aws_cloudwatch_event_rule" "upload" {
-  name        = "${var.project}-upload"
-  description = "Start a LifeStream GPU job when a video is uploaded to uploads/"
+  for_each    = local.upload_rule_groups
+  name        = "${var.project}-upload-${each.key}"
+  description = "Start a LifeStream GPU job when a ${join("/", each.value)} video is uploaded to uploads/"
   event_pattern = jsonencode({
     source      = ["aws.s3"]
     detail-type = ["Object Created"]
     detail = {
       bucket = { name = [local.bucket_name] }
-      # the file type check: only these extensions start a job (anything else is ignored)
-      object = { key = [for ext in local.video_extensions : { wildcard = "uploads/*${ext}" }] }
+      object = { key = [for ext in each.value : { wildcard = "uploads/*${ext}" }] }
     }
   })
 }
 
 resource "aws_cloudwatch_event_target" "upload" {
-  rule     = aws_cloudwatch_event_rule.upload.name
+  for_each = aws_cloudwatch_event_rule.upload
+  rule     = each.value.name
   arn      = aws_batch_job_queue.gpu.arn
   role_arn = aws_iam_role.events.arn
 

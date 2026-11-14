@@ -1,7 +1,7 @@
-import { ArrowLeft, BookOpen, Check, Clapperboard, FileText, Gauge, Loader2, Play, Users } from "lucide-react";
+import { ArrowLeft, BookOpen, Check, Clapperboard, FileText, Gauge, Loader2, Play, Square, Users } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { api, type VideoDetail } from "../lib/api";
+import { api, cancellable, type VideoDetail } from "../lib/api";
 import SummaryTab from "../components/video/SummaryTab";
 import ScenesTab from "../components/video/ScenesTab";
 import SpeakersTab from "../components/video/SpeakersTab";
@@ -45,12 +45,29 @@ function keyMoments(v: VideoDetail): { time: number; label: string }[] {
   return [];
 }
 
-function Processing({ video }: { video: VideoDetail }) {
+function Processing({ video, onChange }: { video: VideoDetail; onChange: () => void }) {
   const currentIndex = STEPS.findIndex(([id]) => id === video.step);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const cancel = async () => {
+    if (!window.confirm(`Cancel processing "${video.title}"? You can retry it later from the Videos page.`)) return;
+    try {
+      await api.cancelVideo(video.video_id);
+      setCancelError(null);
+    } catch (e) {
+      setCancelError((e as Error).message);
+    }
+    onChange();
+  };
   return (
     <div className="card status-card">
-      <div><StatusBadge video={video} /></div>
-      {video.status === "failed" ? (
+      <div className="status-head">
+        <StatusBadge video={video} />
+        {cancellable(video) && <button className="btn" onClick={cancel}><Square size={14} /> Cancel</button>}
+      </div>
+      {cancelError && <p className="error-text" role="alert" style={{ margin: 0 }}>{cancelError}</p>}
+      {video.status === "cancelled" ? (
+        <p className="muted" style={{ margin: 0 }}>Cancelled. Retry or delete it from the <Link to="/videos">Videos</Link> page.</p>
+      ) : video.status === "failed" ? (
         <p className="error-text" role="alert" style={{ margin: 0 }}>{video.error}</p>
       ) : (
         <>
@@ -120,7 +137,7 @@ export default function VideoPage() {
 
       {!ready ? (
         <>
-          <Processing video={video} />
+          <Processing video={video} onChange={refresh} />
           <section className="card live-timing">
             <h3>Timing so far</h3>
             <TimingPanel videoId={video.video_id} />

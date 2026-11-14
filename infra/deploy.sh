@@ -3,6 +3,7 @@
 #
 #   infra/deploy.sh                  infrastructure + dashboard server (the GPU worker image is unchanged)
 #   infra/deploy.sh --worker v2      also build worker image tag v2 first (infra/build-image.sh) and use it
+#   infra/deploy.sh --tag v2         use worker image v2, already built (e.g. after a failed deploy)
 #
 # Steps: build the worker image (optional) -> terraform apply -> create the API key (first time)
 #        -> build the web app -> upload the server code -> rebuild and restart the server (SSM Run Command).
@@ -13,15 +14,19 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 WORKER_TAG=""
-if [ "${1:-}" = "--worker" ]; then
-  WORKER_TAG="${2:?usage: infra/deploy.sh --worker <new image tag>}"
-fi
+USE_TAG=""
+case "${1:-}" in
+  --worker) WORKER_TAG="${2:?usage: infra/deploy.sh --worker <new image tag>}" ;;
+  --tag) USE_TAG="${2:?usage: infra/deploy.sh --tag <existing image tag>}" ;;
+esac
 out() { terraform -chdir=infra output -raw "$1"; }
 
 # ---- 1. worker image (optional) and infrastructure ----
 if [ -n "$WORKER_TAG" ]; then
   infra/build-image.sh "$WORKER_TAG"
   TAG="$WORKER_TAG"
+elif [ -n "$USE_TAG" ]; then
+  TAG="$USE_TAG"
 else
   TAG="$(out image_tag 2>/dev/null || echo v1)"  # keep the image the job definition already uses
 fi

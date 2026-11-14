@@ -1,6 +1,6 @@
-import { BookOpen, Film, RotateCw, Trash2 } from "lucide-react";
+import { BookOpen, Film, RotateCw, Square, Trash2 } from "lucide-react";
 import { Link } from "react-router-dom";
-import type { VideoItem } from "../../lib/api";
+import { cancellable, type VideoItem } from "../../lib/api";
 import { clock, fileSize, timeAgo } from "../../lib/format";
 import StatusBadge, { ProgressBar } from "./StatusBadge";
 
@@ -8,9 +8,10 @@ interface Props {
   videos: VideoItem[];
   onDelete: (v: VideoItem) => void;
   onRetry: (v: VideoItem) => void;
+  onCancel: (v: VideoItem) => void;
 }
 
-export default function VideoList({ videos, onDelete, onRetry }: Props) {
+export default function VideoList({ videos, onDelete, onRetry, onCancel }: Props) {
   if (videos.length === 0) {
     return <div className="card empty">No videos yet. Upload one to get your first summary.</div>;
   }
@@ -47,7 +48,12 @@ export default function VideoList({ videos, onDelete, onRetry }: Props) {
               {v.status === "done" && (
                 <Link className="btn" to={`/videos/${v.video_id}`}><BookOpen size={16} /> View Summary</Link>
               )}
-              {v.status === "failed" && (
+              {cancellable(v) && (
+                <button className="btn" onClick={() => onCancel(v)} aria-label={`Cancel ${v.title}`}>
+                  <Square size={14} /> Cancel
+                </button>
+              )}
+              {(v.status === "failed" || v.status === "cancelled") && (
                 <button className="btn" onClick={() => onRetry(v)}><RotateCw size={16} /> Retry</button>
               )}
               {!busy && (

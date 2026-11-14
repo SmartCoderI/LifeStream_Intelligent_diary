@@ -63,6 +63,7 @@ class FakeBatch:
     def __init__(self):
         self.submitted: list[dict] = []
         self.jobs: list[dict] = []  # DescribeJobs-shaped
+        self.terminated: list[str] = []
 
     def submit_job(self, **kwargs):
         self.submitted.append(kwargs)
@@ -70,6 +71,13 @@ class FakeBatch:
         self.jobs.append({"jobId": job_id, "jobName": kwargs["jobName"], "status": "SUBMITTED",
                           "parameters": kwargs["parameters"], "createdAt": 1})
         return {"jobId": job_id}
+
+    def terminate_job(self, jobId, reason):
+        self.terminated.append(jobId)
+        for j in self.jobs:
+            if j["jobId"] == jobId:
+                j["status"] = "FAILED"
+                j["statusReason"] = reason
 
     def list_jobs(self, **kwargs):
         return {"jobSummaryList": [{"jobId": j["jobId"], "status": j["status"]} for j in self.jobs]}
